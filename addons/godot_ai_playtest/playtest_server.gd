@@ -6,7 +6,7 @@ extends Node
 ##
 ## Inspired by GodotTestDriver patterns for input simulation and wait conditions.
 
-const VERSION := "0.3.0"
+const VERSION := "0.4.0"
 const DEFAULT_PORT := 9876
 const BUFFER_SIZE := 65536
 

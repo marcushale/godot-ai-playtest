@@ -1,6 +1,6 @@
 [project]
 name = "godot-ai-playtest"
-version = "0.3.0"
+version = "0.4.0"
 description = "External TCP control for Godot 4.x games — built for AI agents, automation, and CI pipelines"
 readme = "README.md"
 license = "MIT"
