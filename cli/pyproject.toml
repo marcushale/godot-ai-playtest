@@ -1,24 +1,38 @@
 [project]
-name = "godot-playtest"
-version = "0.1.0"
-description = "AI-assisted playtesting CLI for Godot 4 games"
+name = "godot-ai-playtest"
+version = "0.3.0"
+description = "External TCP control for Godot 4.x games — built for AI agents, automation, and CI pipelines"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    {name = "Auderon", email = "marcus@auderon.com"}
+    {name = "Marcus Hale", email = "marcus@auderon.com"}
 ]
-keywords = ["godot", "gamedev", "testing", "ai", "automation"]
+keywords = [
+    "godot", 
+    "gamedev", 
+    "testing", 
+    "ai", 
+    "automation",
+    "playtesting",
+    "integration-testing",
+    "ci-cd",
+    "game-testing",
+    "visual-regression"
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Games/Entertainment",
     "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+    "Framework :: AsyncIO",
 ]
 
 dependencies = [
@@ -26,6 +40,13 @@ dependencies = [
     "pyyaml>=6.0",
     "rich>=13.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/marcushale/godot-ai-playtest"
+Documentation = "https://github.com/marcushale/godot-ai-playtest#readme"
+Repository = "https://github.com/marcushale/godot-ai-playtest"
+Issues = "https://github.com/marcushale/godot-ai-playtest/issues"
+Changelog = "https://github.com/marcushale/godot-ai-playtest/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
@@ -37,14 +58,21 @@ dev = [
 ]
 
 [project.scripts]
-playtest = "godot_playtest.cli:main"
+playtest = "godot_ai_playtest.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/godot_playtest"]
+packages = ["src/godot_ai_playtest"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+]
 
 [tool.black]
 line-length = 100
