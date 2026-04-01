@@ -2,7 +2,7 @@
 
 **External TCP control for Godot 4.x games — built for AI agents, automation, and CI pipelines.**
 
-[![PyPI version](https://badge.fury.io/py/godot-ai-playtest.svg)](https://pypi.org/project/godot-ai-playtest/)
+[![PyPI version](https://img.shields.io/pypi/v/godot-ai-playtest.svg)](https://pypi.org/project/godot-ai-playtest/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Godot 4.x](https://img.shields.io/badge/Godot-4.x-blue.svg)](https://godotengine.org/)
 
