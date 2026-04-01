@@ -17,8 +17,28 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      should_publish_pypi: ${{ steps.check.outputs.publish_pypi }}
+      should_publish_testpypi: ${{ steps.check.outputs.publish_testpypi }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check publish target
+        id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "publish_pypi=true" >> $GITHUB_OUTPUT
+            echo "publish_testpypi=false" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.inputs.publish_target }}" == "pypi" ]]; then
+            echo "publish_pypi=true" >> $GITHUB_OUTPUT
+            echo "publish_testpypi=false" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.inputs.publish_target }}" == "testpypi" ]]; then
+            echo "publish_pypi=false" >> $GITHUB_OUTPUT
+            echo "publish_testpypi=true" >> $GITHUB_OUTPUT
+          else
+            echo "publish_pypi=false" >> $GITHUB_OUTPUT
+            echo "publish_testpypi=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -46,8 +66,8 @@ jobs:
 
   publish-testpypi:
     needs: build
+    if: needs.build.outputs.should_publish_testpypi == 'true'
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish_target == 'testpypi'
     environment: testpypi
     permissions:
       id-token: write
@@ -65,8 +85,8 @@ jobs:
 
   publish-pypi:
     needs: build
+    if: needs.build.outputs.should_publish_pypi == 'true'
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_target == 'pypi')
     environment: pypi
     permissions:
       id-token: write
