@@ -6,7 +6,7 @@ extends Node
 ##
 ## Inspired by GodotTestDriver patterns for input simulation and wait conditions.
 
-const VERSION := "0.2.0"
+const VERSION := "0.3.0"
 const DEFAULT_PORT := 9876
 const BUFFER_SIZE := 65536
 
@@ -22,6 +22,22 @@ var _client_buffers: Dictionary = {}  # client -> String buffer
 
 # Active input holds (action_name -> release_time_ms)
 var _held_actions: Dictionary = {}
+
+# Performance tracking
+var _frame_times: Array[float] = []
+var _max_frame_samples: int = 120  # ~2 seconds at 60fps
+
+# Error/warning capture
+var _captured_errors: Array[Dictionary] = []
+var _capture_errors: bool = false
+
+# Recording state
+var _recording: bool = false
+var _recorded_inputs: Array[Dictionary] = []
+var _recording_start_ms: int = 0
+
+# Visual regression baselines directory
+var _baselines_dir: String = "user://playtest_baselines"
 
 # Signals for game integration
 signal client_connected(client_id: int)
@@ -41,6 +57,9 @@ func _ready() -> void:
 		return
 	
 	_start_server()
+	
+	# Ensure baselines directory exists
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_baselines_dir))
 
 
 func _start_server() -> void:
@@ -54,10 +73,24 @@ func _start_server() -> void:
 	print("[PlaytestServer] Listening on localhost:%d (v%s)" % [port, VERSION])
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	_accept_new_clients()
 	_process_clients()
 	_process_held_actions()
+	_track_frame_time(delta)
+	_record_frame_if_active()
+
+
+func _track_frame_time(delta: float) -> void:
+	_frame_times.append(delta * 1000.0)  # Convert to ms
+	if _frame_times.size() > _max_frame_samples:
+		_frame_times.pop_front()
+
+
+func _record_frame_if_active() -> void:
+	if not _recording:
+		return
+	# Recording happens in input handlers
 
 
 func _accept_new_clients() -> void:
@@ -157,48 +190,105 @@ func _send_error(client: StreamPeerTCP, id: Variant, code: int, message: String)
 # Method Handlers
 # =============================================================================
 
-func _handle_method(client: StreamPeerTCP, method: String, params: Dictionary) -> Variant:
+func _handle_method(_client: StreamPeerTCP, method: String, params: Dictionary) -> Variant:
 	match method:
+		# Core
 		"ping":
 			return {"pong": true, "version": VERSION}
-		
 		"get_state":
 			return _get_state(params)
 		
+		# Input
 		"send_input":
 			return _send_input(params)
-		
 		"hold_action":
 			return _hold_action(params)
-		
 		"release_action":
 			return _release_action(params)
-		
 		"click_at":
 			return _click_at(params)
-		
 		"move_mouse":
 			return _move_mouse(params)
 		
+		# Visual
 		"screenshot":
 			return _screenshot(params)
+		"compare_screenshot":
+			return _compare_screenshot(params)
+		"save_baseline":
+			return _save_baseline(params)
 		
+		# Query
 		"query":
 			return _query(params)
-		
 		"wait_for":
 			return _wait_for(params)
 		
+		# Scene/Node Control
 		"scene_change":
 			return _scene_change(params)
-		
 		"call_method":
 			return _call_method(params)
-		
 		"execute":
 			if not allow_execute:
 				return {"error": {"code": -32601, "message": "execute disabled"}}
 			return _execute(params)
+		
+		# Time Control
+		"time_advance":
+			return _time_advance(params)
+		"time_set":
+			return _time_set(params)
+		"time_pause":
+			return _time_pause(params)
+		"time_resume":
+			return _time_resume(params)
+		
+		# NPC State
+		"get_npc":
+			return _get_npc(params)
+		"get_all_npcs":
+			return _get_all_npcs(params)
+		
+		# Inventory
+		"get_inventory":
+			return _get_inventory(params)
+		"add_item":
+			return _add_item(params)
+		"remove_item":
+			return _remove_item(params)
+		
+		# Save/Load
+		"save_game":
+			return _save_game(params)
+		"load_game":
+			return _load_game(params)
+		"list_saves":
+			return _list_saves(params)
+		"delete_save":
+			return _delete_save(params)
+		
+		# Performance
+		"get_performance":
+			return _get_performance(params)
+		"assert_performance":
+			return _assert_performance(params)
+		
+		# Error Capture
+		"start_error_capture":
+			return _start_error_capture(params)
+		"stop_error_capture":
+			return _stop_error_capture(params)
+		"get_captured_errors":
+			return _get_captured_errors(params)
+		
+		# Recording
+		"start_recording":
+			return _start_recording(params)
+		"stop_recording":
+			return _stop_recording(params)
+		"playback":
+			return _playback(params)
 		
 		_:
 			return {"error": {"code": -32601, "message": "Method not found: " + method}}
@@ -209,6 +299,10 @@ func _handle_method(client: StreamPeerTCP, method: String, params: Dictionary) -
 # =============================================================================
 
 func _get_state(params: Dictionary) -> Dictionary:
+	var include_npcs: bool = params.get("include_npcs", true)
+	var include_inventory: bool = params.get("include_inventory", false)
+	var include_performance: bool = params.get("include_performance", false)
+	
 	var state := {
 		"version": VERSION,
 		"timestamp_ms": Time.get_ticks_msec(),
@@ -223,7 +317,14 @@ func _get_state(params: Dictionary) -> Dictionary:
 	if player:
 		state["player"] = _get_player_info(player)
 		state["camera"] = _get_camera_info()
-		state["npcs"] = _get_npcs_info()
+		if include_npcs:
+			state["npcs"] = _get_npcs_info()
+	
+	if include_inventory:
+		state["inventory"] = _get_inventory({})
+	
+	if include_performance:
+		state["performance"] = _get_performance({})
 	
 	return state
 
@@ -281,16 +382,34 @@ func _get_world_info() -> Dictionary:
 	# Try TimeManager
 	if has_node("/root/TimeManager"):
 		var tm = get_node("/root/TimeManager")
+		# Support both LOOP's naming (current_hour, current_day) and generic (hour, day)
+		var day_val: int = tm.current_day if "current_day" in tm else (tm.day if "day" in tm else 1)
+		var hour_val: int = tm.current_hour if "current_hour" in tm else (tm.hour if "hour" in tm else 6)
+		var minute_val: int = tm.get_current_minute() if tm.has_method("get_current_minute") else (tm.minute if "minute" in tm else 0)
+		var season_val: int = tm.current_season if "current_season" in tm else (tm.season if "season" in tm else 0)
+		
 		info["time"] = {
-			"day": tm.day if "day" in tm else 1,
-			"hour": tm.hour if "hour" in tm else 6,
-			"season": str(tm.season).split(":")[-1] if "season" in tm else "SPRING",
-			"is_night": tm.is_night() if tm.has_method("is_night") else false,
-			"paused": tm.paused if "paused" in tm else false,
-			"seconds_into_day": tm.seconds_into_day if "seconds_into_day" in tm else 0.0
+			"day": day_val,
+			"hour": hour_val,
+			"minute": minute_val,
+			"season": _season_int_to_name(season_val),
+			"year": tm.year if "year" in tm else 1,
+			"is_night": tm.is_night if "is_night" in tm else (tm.is_night() if tm.has_method("is_night") else false),
+			"paused": tm.is_paused() if tm.has_method("is_paused") else (tm.paused if "paused" in tm else false),
+			"time_scale": tm.time_scale if "time_scale" in tm else 1.0,
+			"seconds_into_day": tm._seconds_into_day if "_seconds_into_day" in tm else (tm.seconds_into_day if "seconds_into_day" in tm else 0.0)
 		}
 	
 	return info
+
+
+func _season_int_to_name(season: int) -> String:
+	match season:
+		0: return "SPRING"
+		1: return "SUMMER"
+		2: return "AUTUMN"
+		3: return "WINTER"
+		_: return str(season)
 
 
 func _get_ui_info() -> Dictionary:
@@ -333,7 +452,12 @@ func _get_player_info(player: Node) -> Dictionary:
 		"facing": "down",
 		"state": "idle",
 		"health": 100.0,
+		"max_health": 100.0,
 		"hunger": 100.0,
+		"max_hunger": 100.0,
+		"energy": 100.0,
+		"max_energy": 100.0,
+		"money": 0,
 		"is_running": false,
 		"is_flying": false,
 		"sleeping": false
@@ -349,17 +473,24 @@ func _get_player_info(player: Node) -> Dictionary:
 		info["state"] = str(player.current_state).to_lower()
 	if "health" in player:
 		info["health"] = player.health
+	if "max_health" in player:
+		info["max_health"] = player.max_health
 	if "hunger" in player:
 		info["hunger"] = player.hunger
+	if "max_hunger" in player:
+		info["max_hunger"] = player.max_hunger
+	if "energy" in player:
+		info["energy"] = player.energy
+	if "max_energy" in player:
+		info["max_energy"] = player.max_energy
+	if "money" in player:
+		info["money"] = player.money
 	if "is_running" in player:
 		info["is_running"] = player.is_running
 	if "is_flying" in player:
 		info["is_flying"] = player.is_flying
 	if "sleeping" in player:
 		info["sleeping"] = player.sleeping
-	
-	# Add to custom state for more details
-	var custom_key := "root_%s" % player.get_path().get_concatenated_names().replace("/", "_")
 	
 	return info
 
@@ -378,14 +509,53 @@ func _get_camera_info() -> Dictionary:
 func _get_npcs_info() -> Array:
 	var npcs := []
 	for npc in get_tree().get_nodes_in_group("npc"):
-		var npc_info := {
-			"name": npc.name,
-			"_node_id": npc.get_instance_id()
-		}
-		if "global_position" in npc:
-			npc_info["position"] = {"x": npc.global_position.x, "y": npc.global_position.y}
-		npcs.append(npc_info)
+		npcs.append(_get_npc_info(npc))
 	return npcs
+
+
+func _get_npc_info(npc: Node) -> Dictionary:
+	var info := {
+		"name": npc.name,
+		"_node_id": npc.get_instance_id(),
+		"_node_path": str(npc.get_path())
+	}
+	
+	if "global_position" in npc:
+		info["position"] = {"x": npc.global_position.x, "y": npc.global_position.y}
+	
+	# NPC-specific attributes for LOOP
+	if "npc_name" in npc:
+		info["display_name"] = npc.npc_name
+	if "relationship" in npc:
+		info["relationship"] = npc.relationship
+	if "friendship_level" in npc:
+		info["friendship_level"] = npc.friendship_level
+	if "mood" in npc:
+		info["mood"] = str(npc.mood)
+	if "current_activity" in npc:
+		info["activity"] = str(npc.current_activity)
+	if "schedule" in npc:
+		info["schedule"] = str(npc.schedule)
+	
+	# Dialogue state
+	if "dialogue_flags" in npc:
+		info["dialogue_flags"] = npc.dialogue_flags
+	if "quest_state" in npc:
+		info["quest_state"] = npc.quest_state
+	if "has_quest" in npc:
+		info["has_quest"] = npc.has_quest
+	if "gifts_today" in npc:
+		info["gifts_today"] = npc.gifts_today
+	if "gifts_this_week" in npc:
+		info["gifts_this_week"] = npc.gifts_this_week
+	
+	# LLM NPC specific
+	if "memory" in npc and npc.memory is Array:
+		info["memory_count"] = npc.memory.size()
+	if "personality" in npc:
+		info["personality"] = npc.personality
+	
+	return info
 
 
 # =============================================================================
@@ -403,6 +573,16 @@ func _send_input(params: Dictionary) -> Dictionary:
 	var duration_ms: int = params.get("duration_ms", 100)
 	var strength: float = params.get("strength", 1.0)
 	
+	# Record if active
+	if _recording:
+		_recorded_inputs.append({
+			"type": "action",
+			"action": action,
+			"duration_ms": duration_ms,
+			"strength": strength,
+			"timestamp_ms": Time.get_ticks_msec() - _recording_start_ms
+		})
+	
 	# Use InputEventAction for proper event propagation (GodotTestDriver pattern)
 	_start_action(action, strength)
 	
@@ -418,7 +598,6 @@ func _send_input(params: Dictionary) -> Dictionary:
 
 
 func _hold_action(params: Dictionary) -> Dictionary:
-	## Hold an action indefinitely until release_action is called
 	var action: String = params.get("action", "")
 	if action.is_empty():
 		return {"error": {"code": -32602, "message": "Missing 'action' parameter"}}
@@ -427,17 +606,32 @@ func _hold_action(params: Dictionary) -> Dictionary:
 		return {"error": {"code": -32602, "message": "Unknown action: " + action}}
 	
 	var strength: float = params.get("strength", 1.0)
+	
+	if _recording:
+		_recorded_inputs.append({
+			"type": "hold",
+			"action": action,
+			"strength": strength,
+			"timestamp_ms": Time.get_ticks_msec() - _recording_start_ms
+		})
+	
 	_start_action(action, strength)
-	_held_actions[action] = -1  # -1 = held indefinitely
+	_held_actions[action] = -1
 	
 	return {"success": true, "action": action, "held": true}
 
 
 func _release_action(params: Dictionary) -> Dictionary:
-	## Release a held action
 	var action: String = params.get("action", "")
 	if action.is_empty():
 		return {"error": {"code": -32602, "message": "Missing 'action' parameter"}}
+	
+	if _recording:
+		_recorded_inputs.append({
+			"type": "release",
+			"action": action,
+			"timestamp_ms": Time.get_ticks_msec() - _recording_start_ms
+		})
 	
 	_end_action(action)
 	_held_actions.erase(action)
@@ -446,7 +640,6 @@ func _release_action(params: Dictionary) -> Dictionary:
 
 
 func _start_action(action: String, strength: float = 1.0) -> void:
-	## Start an input action using proper InputEvent (GodotTestDriver pattern)
 	var event := InputEventAction.new()
 	event.action = action
 	event.pressed = true
@@ -457,7 +650,6 @@ func _start_action(action: String, strength: float = 1.0) -> void:
 
 
 func _end_action(action: String) -> void:
-	## End an input action (GodotTestDriver pattern)
 	var event := InputEventAction.new()
 	event.action = action
 	event.pressed = false
@@ -467,7 +659,6 @@ func _end_action(action: String) -> void:
 
 
 func _process_held_actions() -> void:
-	## Process any held actions with timeouts
 	var now := Time.get_ticks_msec()
 	var to_release: Array[String] = []
 	
@@ -482,18 +673,23 @@ func _process_held_actions() -> void:
 
 
 func _click_at(params: Dictionary) -> Dictionary:
-	## Click mouse at position (GodotTestDriver pattern)
 	var x: float = params.get("x", 0.0)
 	var y: float = params.get("y", 0.0)
 	var button: int = params.get("button", MOUSE_BUTTON_LEFT)
 	
+	if _recording:
+		_recorded_inputs.append({
+			"type": "click",
+			"x": x, "y": y,
+			"button": button,
+			"timestamp_ms": Time.get_ticks_msec() - _recording_start_ms
+		})
+	
 	var position := Vector2(x, y)
 	var viewport := get_viewport()
 	
-	# Move mouse to position
 	_move_mouse_to(viewport, position)
 	
-	# Press
 	var press_event := InputEventMouseButton.new()
 	press_event.button_index = button
 	press_event.pressed = true
@@ -502,7 +698,6 @@ func _click_at(params: Dictionary) -> Dictionary:
 	Input.parse_input_event(press_event)
 	Input.flush_buffered_events()
 	
-	# Release (next frame)
 	call_deferred("_release_mouse", position, button)
 	
 	return {"success": true, "position": {"x": x, "y": y}, "button": button}
@@ -519,7 +714,6 @@ func _release_mouse(position: Vector2, button: int) -> void:
 
 
 func _move_mouse(params: Dictionary) -> Dictionary:
-	## Move mouse to position
 	var x: float = params.get("x", 0.0)
 	var y: float = params.get("y", 0.0)
 	
@@ -529,7 +723,6 @@ func _move_mouse(params: Dictionary) -> Dictionary:
 
 
 func _move_mouse_to(viewport: Viewport, position: Vector2) -> void:
-	## Move mouse with proper motion event (GodotTestDriver pattern)
 	var old_position := viewport.get_mouse_position()
 	viewport.warp_mouse(position)
 	
@@ -542,20 +735,722 @@ func _move_mouse_to(viewport: Viewport, position: Vector2) -> void:
 
 
 # =============================================================================
-# Wait Conditions (Simplified - no await to avoid async complexity)
+# Time Control
+# =============================================================================
+
+func _time_advance(params: Dictionary) -> Dictionary:
+	var tm := get_node_or_null("/root/TimeManager")
+	if not tm:
+		return {"error": {"code": -32603, "message": "TimeManager not found"}}
+	
+	var days: int = params.get("days", 0)
+	var hours: int = params.get("hours", 0)
+	var minutes: int = params.get("minutes", 0)
+	
+	# Calculate total hours to advance
+	var total_hours: int = hours + (days * 24) + (minutes / 60)
+	var remaining_minutes: int = minutes % 60
+	
+	if total_hours <= 0 and remaining_minutes <= 0:
+		return {"error": {"code": -32602, "message": "Must advance by at least 1 minute"}}
+	
+	# Get current time
+	var current_day: int = tm.current_day if "current_day" in tm else (tm.day if "day" in tm else 1)
+	var current_hour: int = tm.current_hour if "current_hour" in tm else (tm.hour if "hour" in tm else 6)
+	
+	# Calculate new time
+	var new_hour: int = current_hour + total_hours
+	var extra_days: int = new_hour / 24
+	new_hour = new_hour % 24
+	var new_day: int = current_day + extra_days
+	
+	# Try set_time method first (LOOP's TimeManager has this)
+	if tm.has_method("set_time"):
+		tm.set_time(new_day, new_hour)
+	elif tm.has_method("advance_time"):
+		tm.advance_time(total_hours * 60 + remaining_minutes)
+	elif tm.has_method("skip_time"):
+		tm.skip_time(total_hours * 60 + remaining_minutes)
+	else:
+		# Manual property setting
+		if "current_day" in tm:
+			tm.current_day = new_day
+		elif "day" in tm:
+			tm.day = new_day
+		
+		if "current_hour" in tm:
+			tm.current_hour = new_hour
+		elif "hour" in tm:
+			tm.hour = new_hour
+	
+	return {
+		"success": true,
+		"advanced": {"days": days, "hours": hours, "minutes": minutes},
+		"current_time": _get_world_info()["time"]
+	}
+
+
+func _time_set(params: Dictionary) -> Dictionary:
+	var tm := get_node_or_null("/root/TimeManager")
+	if not tm:
+		return {"error": {"code": -32603, "message": "TimeManager not found"}}
+	
+	if "day" in params and "day" in tm:
+		tm.day = params["day"]
+	if "hour" in params and "hour" in tm:
+		tm.hour = params["hour"]
+	if "minute" in params and "minute" in tm:
+		tm.minute = params["minute"]
+	if "season" in params and "season" in tm:
+		var season_str: String = params["season"].to_upper()
+		match season_str:
+			"SPRING": tm.season = 0
+			"SUMMER": tm.season = 1
+			"AUTUMN", "FALL": tm.season = 2
+			"WINTER": tm.season = 3
+	if "year" in params and "year" in tm:
+		tm.year = params["year"]
+	
+	return {"success": true, "current_time": _get_world_info()["time"]}
+
+
+func _time_pause(params: Dictionary) -> Dictionary:
+	var tm := get_node_or_null("/root/TimeManager")
+	if not tm:
+		return {"error": {"code": -32603, "message": "TimeManager not found"}}
+	
+	if tm.has_method("pause"):
+		tm.pause()
+	elif "paused" in tm:
+		tm.paused = true
+	else:
+		return {"error": {"code": -32603, "message": "TimeManager doesn't support pausing"}}
+	
+	return {"success": true, "paused": true}
+
+
+func _time_resume(params: Dictionary) -> Dictionary:
+	var tm := get_node_or_null("/root/TimeManager")
+	if not tm:
+		return {"error": {"code": -32603, "message": "TimeManager not found"}}
+	
+	if tm.has_method("resume"):
+		tm.resume()
+	elif "paused" in tm:
+		tm.paused = false
+	else:
+		return {"error": {"code": -32603, "message": "TimeManager doesn't support resuming"}}
+	
+	return {"success": true, "paused": false}
+
+
+# =============================================================================
+# NPC State
+# =============================================================================
+
+func _get_npc(params: Dictionary) -> Dictionary:
+	var npc_name: String = params.get("name", "")
+	if npc_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'name' parameter"}}
+	
+	for npc in get_tree().get_nodes_in_group("npc"):
+		var name_match := false
+		if npc.name.to_lower() == npc_name.to_lower():
+			name_match = true
+		elif "npc_name" in npc and npc.npc_name.to_lower() == npc_name.to_lower():
+			name_match = true
+		elif "display_name" in npc and npc.display_name.to_lower() == npc_name.to_lower():
+			name_match = true
+		
+		if name_match:
+			return {"found": true, "npc": _get_npc_info(npc)}
+	
+	return {"found": false, "name": npc_name}
+
+
+func _get_all_npcs(params: Dictionary) -> Dictionary:
+	var npcs := []
+	for npc in get_tree().get_nodes_in_group("npc"):
+		npcs.append(_get_npc_info(npc))
+	return {"npcs": npcs, "count": npcs.size()}
+
+
+# =============================================================================
+# Inventory
+# =============================================================================
+
+func _get_inventory(params: Dictionary) -> Dictionary:
+	var player := _find_player()
+	if not player:
+		return {"error": {"code": -32603, "message": "Player not found"}}
+	
+	var inventory := {"items": [], "capacity": 0, "used": 0}
+	
+	# Try common inventory patterns
+	var inv_node: Node = null
+	if "inventory" in player:
+		inv_node = player.inventory
+	elif player.has_node("Inventory"):
+		inv_node = player.get_node("Inventory")
+	
+	if inv_node:
+		if "items" in inv_node:
+			for item in inv_node.items:
+				if item != null:
+					inventory["items"].append(_serialize_item(item))
+		if "capacity" in inv_node:
+			inventory["capacity"] = inv_node.capacity
+		if "slots" in inv_node:
+			inventory["capacity"] = inv_node.slots.size() if inv_node.slots is Array else inv_node.slots
+	
+	# Try InventoryManager autoload
+	var inv_mgr := get_node_or_null("/root/InventoryManager")
+	if inv_mgr:
+		if inv_mgr.has_method("get_items"):
+			var items = inv_mgr.get_items()
+			for item in items:
+				inventory["items"].append(_serialize_item(item))
+		if inv_mgr.has_method("get_capacity"):
+			inventory["capacity"] = inv_mgr.get_capacity()
+	
+	inventory["used"] = inventory["items"].size()
+	return inventory
+
+
+func _serialize_item(item: Variant) -> Dictionary:
+	if item is Dictionary:
+		return item
+	
+	var info := {"name": "", "quantity": 1, "type": "unknown"}
+	
+	if item is Node:
+		info["name"] = item.name
+		if "item_name" in item:
+			info["name"] = item.item_name
+		if "quantity" in item:
+			info["quantity"] = item.quantity
+		if "stack_size" in item:
+			info["quantity"] = item.stack_size
+		if "item_type" in item:
+			info["type"] = str(item.item_type)
+		if "category" in item:
+			info["type"] = str(item.category)
+	elif item is Resource:
+		if "name" in item:
+			info["name"] = item.name
+		if "resource_name" in item:
+			info["name"] = item.resource_name
+	
+	return info
+
+
+func _add_item(params: Dictionary) -> Dictionary:
+	var item_name: String = params.get("item", "")
+	var quantity: int = params.get("quantity", 1)
+	
+	if item_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'item' parameter"}}
+	
+	# Try InventoryManager
+	var inv_mgr := get_node_or_null("/root/InventoryManager")
+	if inv_mgr and inv_mgr.has_method("add_item"):
+		var result = inv_mgr.add_item(item_name, quantity)
+		return {"success": true, "item": item_name, "quantity": quantity, "result": str(result)}
+	
+	# Try player inventory
+	var player := _find_player()
+	if player and "inventory" in player and player.inventory.has_method("add_item"):
+		var result = player.inventory.add_item(item_name, quantity)
+		return {"success": true, "item": item_name, "quantity": quantity, "result": str(result)}
+	
+	return {"error": {"code": -32603, "message": "No inventory system found"}}
+
+
+func _remove_item(params: Dictionary) -> Dictionary:
+	var item_name: String = params.get("item", "")
+	var quantity: int = params.get("quantity", 1)
+	
+	if item_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'item' parameter"}}
+	
+	var inv_mgr := get_node_or_null("/root/InventoryManager")
+	if inv_mgr and inv_mgr.has_method("remove_item"):
+		var result = inv_mgr.remove_item(item_name, quantity)
+		return {"success": true, "item": item_name, "quantity": quantity, "result": str(result)}
+	
+	var player := _find_player()
+	if player and "inventory" in player and player.inventory.has_method("remove_item"):
+		var result = player.inventory.remove_item(item_name, quantity)
+		return {"success": true, "item": item_name, "quantity": quantity, "result": str(result)}
+	
+	return {"error": {"code": -32603, "message": "No inventory system found"}}
+
+
+# =============================================================================
+# Save/Load
+# =============================================================================
+
+func _save_game(params: Dictionary) -> Dictionary:
+	var slot: String = params.get("slot", "playtest_save")
+	
+	# Try SaveManager
+	var save_mgr := get_node_or_null("/root/SaveManager")
+	if save_mgr:
+		if save_mgr.has_method("save_game"):
+			var result = save_mgr.save_game(slot)
+			return {"success": true, "slot": slot, "result": str(result)}
+		elif save_mgr.has_method("save"):
+			var result = save_mgr.save(slot)
+			return {"success": true, "slot": slot, "result": str(result)}
+	
+	# Try GameManager
+	var gm := get_node_or_null("/root/GameManager")
+	if gm and gm.has_method("save_game"):
+		var result = gm.save_game(slot)
+		return {"success": true, "slot": slot, "result": str(result)}
+	
+	return {"error": {"code": -32603, "message": "No save system found"}}
+
+
+func _load_game(params: Dictionary) -> Dictionary:
+	var slot: String = params.get("slot", "playtest_save")
+	
+	var save_mgr := get_node_or_null("/root/SaveManager")
+	if save_mgr:
+		if save_mgr.has_method("load_game"):
+			var result = save_mgr.load_game(slot)
+			return {"success": true, "slot": slot, "result": str(result)}
+		elif save_mgr.has_method("load"):
+			var result = save_mgr.load(slot)
+			return {"success": true, "slot": slot, "result": str(result)}
+	
+	var gm := get_node_or_null("/root/GameManager")
+	if gm and gm.has_method("load_game"):
+		var result = gm.load_game(slot)
+		return {"success": true, "slot": slot, "result": str(result)}
+	
+	return {"error": {"code": -32603, "message": "No save system found"}}
+
+
+func _list_saves(params: Dictionary) -> Dictionary:
+	var saves := []
+	var save_dir := "user://saves"
+	
+	var dir := DirAccess.open(save_dir)
+	if dir:
+		dir.list_dir_begin()
+		var file_name := dir.get_next()
+		while file_name != "":
+			if not dir.current_is_dir() and (file_name.ends_with(".save") or file_name.ends_with(".json")):
+				var full_path := save_dir + "/" + file_name
+				saves.append({
+					"name": file_name.get_basename(),
+					"path": full_path,
+					"modified": FileAccess.get_modified_time(full_path)
+				})
+			file_name = dir.get_next()
+	
+	return {"saves": saves, "count": saves.size()}
+
+
+func _delete_save(params: Dictionary) -> Dictionary:
+	var slot: String = params.get("slot", "")
+	if slot.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'slot' parameter"}}
+	
+	var save_dir := "user://saves"
+	var deleted := false
+	
+	for ext in [".save", ".json", ""]:
+		var path: String = save_dir + "/" + slot + ext
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(path)
+			deleted = true
+	
+	return {"success": deleted, "slot": slot}
+
+
+# =============================================================================
+# Performance Monitoring
+# =============================================================================
+
+func _get_performance(params: Dictionary) -> Dictionary:
+	var fps := Engine.get_frames_per_second()
+	var frame_time := 1000.0 / fps if fps > 0 else 0.0
+	
+	# Calculate stats from tracked frame times
+	var avg_frame_ms := 0.0
+	var max_frame_ms := 0.0
+	var min_frame_ms := 999999.0
+	
+	if _frame_times.size() > 0:
+		var total := 0.0
+		for ft in _frame_times:
+			total += ft
+			max_frame_ms = maxf(max_frame_ms, ft)
+			min_frame_ms = minf(min_frame_ms, ft)
+		avg_frame_ms = total / _frame_times.size()
+	
+	# Memory info
+	var static_mem := OS.get_static_memory_usage()
+	var peak_mem := OS.get_static_memory_peak_usage() if OS.has_method("get_static_memory_peak_usage") else 0
+	
+	# Object counts
+	var orphan_nodes := Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)
+	var total_objects := Performance.get_monitor(Performance.OBJECT_COUNT)
+	var resource_count := Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT)
+	
+	# Rendering
+	var draw_calls := Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)
+	var vertices := Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)
+	
+	return {
+		"fps": fps,
+		"frame_time_ms": frame_time,
+		"avg_frame_ms": avg_frame_ms,
+		"max_frame_ms": max_frame_ms,
+		"min_frame_ms": min_frame_ms if min_frame_ms < 999999.0 else 0.0,
+		"memory": {
+			"static_mb": static_mem / 1048576.0,
+			"peak_mb": peak_mem / 1048576.0
+		},
+		"objects": {
+			"total": int(total_objects),
+			"orphan_nodes": int(orphan_nodes),
+			"resources": int(resource_count)
+		},
+		"rendering": {
+			"draw_calls": int(draw_calls),
+			"vertices": int(vertices)
+		},
+		"samples": _frame_times.size()
+	}
+
+
+func _assert_performance(params: Dictionary) -> Dictionary:
+	var perf := _get_performance({})
+	var failures := []
+	
+	if "min_fps" in params:
+		var min_fps: float = params["min_fps"]
+		if perf["fps"] < min_fps:
+			failures.append("FPS %.1f < required %.1f" % [perf["fps"], min_fps])
+	
+	if "max_frame_ms" in params:
+		var max_frame: float = params["max_frame_ms"]
+		if perf["max_frame_ms"] > max_frame:
+			failures.append("Max frame %.1fms > allowed %.1fms" % [perf["max_frame_ms"], max_frame])
+	
+	if "max_avg_frame_ms" in params:
+		var max_avg: float = params["max_avg_frame_ms"]
+		if perf["avg_frame_ms"] > max_avg:
+			failures.append("Avg frame %.1fms > allowed %.1fms" % [perf["avg_frame_ms"], max_avg])
+	
+	if "max_memory_mb" in params:
+		var max_mem: float = params["max_memory_mb"]
+		if perf["memory"]["static_mb"] > max_mem:
+			failures.append("Memory %.1fMB > allowed %.1fMB" % [perf["memory"]["static_mb"], max_mem])
+	
+	if "max_orphan_nodes" in params:
+		var max_orphans: int = params["max_orphan_nodes"]
+		if perf["objects"]["orphan_nodes"] > max_orphans:
+			failures.append("Orphan nodes %d > allowed %d" % [perf["objects"]["orphan_nodes"], max_orphans])
+	
+	return {
+		"success": failures.size() == 0,
+		"failures": failures,
+		"performance": perf
+	}
+
+
+# =============================================================================
+# Error Capture
+# =============================================================================
+
+func _start_error_capture(params: Dictionary) -> Dictionary:
+	_captured_errors.clear()
+	_capture_errors = true
+	
+	# Hook into Godot's error handling
+	if not is_connected("tree_entered", _on_tree_error):
+		# Note: Godot doesn't have a direct error signal, so we check the log
+		pass
+	
+	return {"success": true, "capturing": true}
+
+
+func _stop_error_capture(params: Dictionary) -> Dictionary:
+	_capture_errors = false
+	return {"success": true, "capturing": false, "error_count": _captured_errors.size()}
+
+
+func _get_captured_errors(params: Dictionary) -> Dictionary:
+	return {
+		"errors": _captured_errors,
+		"count": _captured_errors.size(),
+		"capturing": _capture_errors
+	}
+
+
+func _on_tree_error() -> void:
+	# Placeholder - Godot doesn't emit errors as signals
+	pass
+
+
+# For error capture, we'll check the CrashHandler if available
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE and _capture_errors:
+		# Try to capture any crash info
+		var crash_handler := get_node_or_null("/root/CrashHandler")
+		if crash_handler and "last_error" in crash_handler:
+			_captured_errors.append({
+				"type": "crash",
+				"message": crash_handler.last_error,
+				"timestamp_ms": Time.get_ticks_msec()
+			})
+
+
+# =============================================================================
+# Recording & Playback
+# =============================================================================
+
+func _start_recording(params: Dictionary) -> Dictionary:
+	_recording = true
+	_recorded_inputs.clear()
+	_recording_start_ms = Time.get_ticks_msec()
+	
+	return {"success": true, "recording": true}
+
+
+func _stop_recording(params: Dictionary) -> Dictionary:
+	_recording = false
+	var duration_ms := Time.get_ticks_msec() - _recording_start_ms
+	
+	var save_path: String = params.get("save_to", "")
+	if not save_path.is_empty():
+		var file := FileAccess.open(save_path, FileAccess.WRITE)
+		if file:
+			file.store_string(JSON.stringify({
+				"version": VERSION,
+				"duration_ms": duration_ms,
+				"inputs": _recorded_inputs
+			}, "\t"))
+			file.close()
+	
+	return {
+		"success": true,
+		"recording": false,
+		"duration_ms": duration_ms,
+		"input_count": _recorded_inputs.size(),
+		"inputs": _recorded_inputs if save_path.is_empty() else null,
+		"saved_to": save_path if not save_path.is_empty() else null
+	}
+
+
+func _playback(params: Dictionary) -> Dictionary:
+	var inputs: Array = params.get("inputs", [])
+	var load_from: String = params.get("load_from", "")
+	
+	if not load_from.is_empty():
+		var file := FileAccess.open(load_from, FileAccess.READ)
+		if file:
+			var json := JSON.new()
+			if json.parse(file.get_as_text()) == OK:
+				var data: Dictionary = json.data
+				inputs = data.get("inputs", [])
+			file.close()
+	
+	if inputs.is_empty():
+		return {"error": {"code": -32602, "message": "No inputs to play back"}}
+	
+	# Schedule all inputs based on their timestamps
+	for input_event in inputs:
+		var delay_ms: int = input_event.get("timestamp_ms", 0)
+		get_tree().create_timer(delay_ms / 1000.0).timeout.connect(
+			func(): _replay_input(input_event)
+		)
+	
+	return {"success": true, "input_count": inputs.size()}
+
+
+func _replay_input(input_event: Dictionary) -> void:
+	match input_event.get("type", ""):
+		"action":
+			_send_input({
+				"action": input_event.get("action", ""),
+				"duration_ms": input_event.get("duration_ms", 100),
+				"strength": input_event.get("strength", 1.0)
+			})
+		"hold":
+			_hold_action({
+				"action": input_event.get("action", ""),
+				"strength": input_event.get("strength", 1.0)
+			})
+		"release":
+			_release_action({"action": input_event.get("action", "")})
+		"click":
+			_click_at({
+				"x": input_event.get("x", 0.0),
+				"y": input_event.get("y", 0.0),
+				"button": input_event.get("button", MOUSE_BUTTON_LEFT)
+			})
+
+
+# =============================================================================
+# Visual Regression
+# =============================================================================
+
+func _screenshot(params: Dictionary) -> Dictionary:
+	var scale: float = params.get("scale", 1.0)
+	var format: String = params.get("format", "png")
+	var name: String = params.get("name", "")
+	
+	var viewport := get_viewport()
+	var img := viewport.get_texture().get_image()
+	
+	if scale != 1.0:
+		var new_size := Vector2i(int(img.get_width() * scale), int(img.get_height() * scale))
+		img.resize(new_size.x, new_size.y, Image.INTERPOLATE_LANCZOS)
+	
+	var timestamp := Time.get_ticks_msec()
+	var filename := name if not name.is_empty() else "playtest_%d" % timestamp
+	filename += "." + format
+	
+	var dir_path := "user://screenshots"
+	var full_path := dir_path + "/" + filename
+	
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
+	
+	var err: int
+	if format == "jpg" or format == "jpeg":
+		err = img.save_jpg(full_path)
+	else:
+		err = img.save_png(full_path)
+	
+	if err != OK:
+		return {"error": {"code": -32603, "message": "Failed to save screenshot: " + error_string(err)}}
+	
+	var global_path := ProjectSettings.globalize_path(full_path)
+	return {
+		"success": true,
+		"path": global_path,
+		"size": {"width": img.get_width(), "height": img.get_height()}
+	}
+
+
+func _save_baseline(params: Dictionary) -> Dictionary:
+	var name: String = params.get("name", "")
+	if name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'name' parameter"}}
+	
+	var viewport := get_viewport()
+	var img := viewport.get_texture().get_image()
+	
+	var path := _baselines_dir + "/" + name + ".png"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_baselines_dir))
+	
+	var err := img.save_png(path)
+	if err != OK:
+		return {"error": {"code": -32603, "message": "Failed to save baseline: " + error_string(err)}}
+	
+	return {
+		"success": true,
+		"path": ProjectSettings.globalize_path(path),
+		"size": {"width": img.get_width(), "height": img.get_height()}
+	}
+
+
+func _compare_screenshot(params: Dictionary) -> Dictionary:
+	var name: String = params.get("name", "")
+	var threshold: float = params.get("threshold", 0.01)  # 1% pixel difference allowed
+	
+	if name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'name' parameter"}}
+	
+	var baseline_path := _baselines_dir + "/" + name + ".png"
+	if not FileAccess.file_exists(baseline_path):
+		return {"error": {"code": -32602, "message": "Baseline not found: " + name}}
+	
+	# Load baseline
+	var baseline := Image.load_from_file(baseline_path)
+	if not baseline:
+		return {"error": {"code": -32603, "message": "Failed to load baseline"}}
+	
+	# Capture current
+	var current := get_viewport().get_texture().get_image()
+	
+	# Compare dimensions
+	if baseline.get_width() != current.get_width() or baseline.get_height() != current.get_height():
+		return {
+			"success": false,
+			"match": false,
+			"reason": "Size mismatch: baseline %dx%d vs current %dx%d" % [
+				baseline.get_width(), baseline.get_height(),
+				current.get_width(), current.get_height()
+			]
+		}
+	
+	# Compare pixels
+	var total_pixels := baseline.get_width() * baseline.get_height()
+	var different_pixels := 0
+	
+	for y in range(baseline.get_height()):
+		for x in range(baseline.get_width()):
+			var baseline_pixel := baseline.get_pixel(x, y)
+			var current_pixel := current.get_pixel(x, y)
+			
+			# Compare with small tolerance for compression artifacts
+			if absf(baseline_pixel.r - current_pixel.r) > 0.02 or \
+			   absf(baseline_pixel.g - current_pixel.g) > 0.02 or \
+			   absf(baseline_pixel.b - current_pixel.b) > 0.02 or \
+			   absf(baseline_pixel.a - current_pixel.a) > 0.02:
+				different_pixels += 1
+	
+	var diff_ratio := float(different_pixels) / float(total_pixels)
+	var matches := diff_ratio <= threshold
+	
+	# Save diff image if there are differences
+	var diff_path := ""
+	if not matches:
+		var diff_img := Image.create(baseline.get_width(), baseline.get_height(), false, Image.FORMAT_RGBA8)
+		for y in range(baseline.get_height()):
+			for x in range(baseline.get_width()):
+				var baseline_pixel := baseline.get_pixel(x, y)
+				var current_pixel := current.get_pixel(x, y)
+				
+				if absf(baseline_pixel.r - current_pixel.r) > 0.02 or \
+				   absf(baseline_pixel.g - current_pixel.g) > 0.02 or \
+				   absf(baseline_pixel.b - current_pixel.b) > 0.02:
+					diff_img.set_pixel(x, y, Color.RED)
+				else:
+					diff_img.set_pixel(x, y, current_pixel * 0.5)
+		
+		diff_path = "user://screenshots/diff_%s_%d.png" % [name, Time.get_ticks_msec()]
+		diff_img.save_png(diff_path)
+		diff_path = ProjectSettings.globalize_path(diff_path)
+	
+	return {
+		"success": true,
+		"match": matches,
+		"difference_ratio": diff_ratio,
+		"different_pixels": different_pixels,
+		"total_pixels": total_pixels,
+		"threshold": threshold,
+		"diff_image": diff_path if not diff_path.is_empty() else null
+	}
+
+
+# =============================================================================
+# Wait Conditions
 # =============================================================================
 
 func _wait_for(params: Dictionary) -> Dictionary:
-	## Check a condition or just return info about what to wait for
-	## The actual waiting should be done client-side
 	var condition: String = params.get("condition", "")
 	var timeout_ms: int = params.get("timeout_ms", 5000)
 	
 	if condition.is_empty():
-		# No condition, just return current time for client-side wait
 		return {"current_time_ms": Time.get_ticks_msec(), "timeout_ms": timeout_ms}
 	
-	# Evaluate condition once and return result
 	var result := _evaluate_condition(condition)
 	return {
 		"condition": condition,
@@ -565,12 +1460,8 @@ func _wait_for(params: Dictionary) -> Dictionary:
 
 
 func _evaluate_condition(condition: String) -> bool:
-	## Evaluate a simple condition against current state
-	## Supports: player.health > 50, scene.name == 'Main', etc.
-	
 	var state := _get_state({})
 	
-	# Parse condition (very simple parser)
 	var parts := condition.split(" ")
 	if parts.size() < 3:
 		return false
@@ -579,12 +1470,10 @@ func _evaluate_condition(condition: String) -> bool:
 	var operator := parts[1]
 	var right_value := " ".join(parts.slice(2))
 	
-	# Get left value from state
 	var left_val = _get_nested_value(state, left_path)
 	if left_val == null:
 		return false
 	
-	# Parse right value
 	var right_val: Variant = right_value
 	if right_value.begins_with("'") and right_value.ends_with("'"):
 		right_val = right_value.substr(1, right_value.length() - 2)
@@ -595,7 +1484,6 @@ func _evaluate_condition(condition: String) -> bool:
 	elif right_value == "false":
 		right_val = false
 	
-	# Compare
 	match operator:
 		"==":
 			return left_val == right_val
@@ -633,7 +1521,7 @@ func _get_nested_value(dict: Dictionary, path: String) -> Variant:
 
 
 # =============================================================================
-# Scene Control
+# Scene/Node Control
 # =============================================================================
 
 func _scene_change(params: Dictionary) -> Dictionary:
@@ -661,7 +1549,6 @@ func _call_method(params: Dictionary) -> Dictionary:
 	
 	var node := get_node_or_null(node_path)
 	if not node:
-		# Try from current scene
 		var current := get_tree().current_scene
 		if current:
 			node = current.get_node_or_null(node_path.trim_prefix("/root/"))
@@ -676,47 +1563,23 @@ func _call_method(params: Dictionary) -> Dictionary:
 	return {"success": true, "node": node_path, "method": method_name, "result": str(result) if result != null else null}
 
 
-# =============================================================================
-# Screenshot
-# =============================================================================
-
-func _screenshot(params: Dictionary) -> Dictionary:
-	var scale: float = params.get("scale", 1.0)
-	var format: String = params.get("format", "png")
+func _execute(params: Dictionary) -> Dictionary:
+	var expression_str: String = params.get("expression", "")
+	if expression_str.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'expression' parameter"}}
 	
-	# Capture viewport
-	var viewport := get_viewport()
-	var img := viewport.get_texture().get_image()
-	
-	if scale != 1.0:
-		var new_size := Vector2i(int(img.get_width() * scale), int(img.get_height() * scale))
-		img.resize(new_size.x, new_size.y, Image.INTERPOLATE_LANCZOS)
-	
-	# Generate filename
-	var timestamp := Time.get_ticks_msec()
-	var filename := "playtest_%d.%s" % [timestamp, format]
-	var dir_path := "user://screenshots"
-	var full_path := dir_path + "/" + filename
-	
-	# Ensure directory exists
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir_path))
-	
-	# Save image
-	var err: int
-	if format == "jpg" or format == "jpeg":
-		err = img.save_jpg(full_path)
-	else:
-		err = img.save_png(full_path)
+	var expression := Expression.new()
+	var err := expression.parse(expression_str)
 	
 	if err != OK:
-		return {"error": {"code": -32603, "message": "Failed to save screenshot: " + error_string(err)}}
+		return {"error": {"code": -32602, "message": "Parse error: " + expression.get_error_text()}}
 	
-	var global_path := ProjectSettings.globalize_path(full_path)
-	return {
-		"success": true,
-		"path": global_path,
-		"size": {"width": img.get_width(), "height": img.get_height()}
-	}
+	var result = expression.execute([], self)
+	
+	if expression.has_execute_failed():
+		return {"error": {"code": -32603, "message": "Execution failed: " + expression.get_error_text()}}
+	
+	return {"success": true, "result": str(result) if result != null else null}
 
 
 # =============================================================================
@@ -779,7 +1642,6 @@ func _query_entities_near(params: Dictionary) -> Dictionary:
 	
 	var entities := []
 	
-	# Check all physics bodies, NPCs, items, etc.
 	for group in ["npc", "item", "interactable", "player"]:
 		for node in get_tree().get_nodes_in_group(group):
 			if "global_position" in node:
@@ -799,14 +1661,12 @@ func _query_tile(params: Dictionary) -> Dictionary:
 	var pos_dict: Dictionary = params.get("position", {})
 	var position := Vector2i(int(pos_dict.get("x", 0)), int(pos_dict.get("y", 0)))
 	
-	# Try to find tilemap
 	var current := get_tree().current_scene
 	if not current:
 		return {"error": {"code": -32603, "message": "No current scene"}}
 	
 	var tilemap := current.get_node_or_null("TileMap") as TileMapLayer
 	if not tilemap:
-		# Try finding any TileMapLayer
 		for child in current.get_children():
 			if child is TileMapLayer:
 				tilemap = child
@@ -827,35 +1687,11 @@ func _query_tile(params: Dictionary) -> Dictionary:
 
 
 func _query_input_actions() -> Dictionary:
-	## Return all available input actions
 	var actions := []
 	for action in InputMap.get_actions():
-		if not action.begins_with("ui_"):  # Skip built-in UI actions
+		if not action.begins_with("ui_"):
 			actions.append(action)
 	return {"actions": actions}
-
-
-# =============================================================================
-# Execute (Dangerous!)
-# =============================================================================
-
-func _execute(params: Dictionary) -> Dictionary:
-	var expression_str: String = params.get("expression", "")
-	if expression_str.is_empty():
-		return {"error": {"code": -32602, "message": "Missing 'expression' parameter"}}
-	
-	var expression := Expression.new()
-	var err := expression.parse(expression_str)
-	
-	if err != OK:
-		return {"error": {"code": -32602, "message": "Parse error: " + expression.get_error_text()}}
-	
-	var result = expression.execute([], self)
-	
-	if expression.has_execute_failed():
-		return {"error": {"code": -32603, "message": "Execution failed: " + expression.get_error_text()}}
-	
-	return {"success": true, "result": str(result) if result != null else null}
 
 
 # =============================================================================
@@ -867,7 +1703,6 @@ func _exit_tree() -> void:
 		_server.stop()
 		_server = null
 	
-	# Release any held actions
 	for action in _held_actions.keys():
 		_end_action(action)
 	_held_actions.clear()

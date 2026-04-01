@@ -79,7 +79,6 @@ class PlaytestClient:
     def _handle_message(self, message: dict[str, Any]) -> None:
         """Handle incoming JSON-RPC message."""
         if "id" in message and message["id"] in self._pending:
-            # Response to a request
             future = self._pending.pop(message["id"])
             if "error" in message:
                 future.set_exception(PlaytestError(message["error"]))
@@ -87,7 +86,6 @@ class PlaytestClient:
                 future.set_result(message.get("result", {}))
         
         elif message.get("method") == "event":
-            # Event notification
             params = message.get("params", {})
             event_type = params.get("type", "")
             event_data = params.get("data", {})
@@ -122,75 +120,436 @@ class PlaytestClient:
         return await asyncio.wait_for(future, timeout=30.0)
     
     # =========================================================================
-    # Public API
+    # Core
     # =========================================================================
     
     async def ping(self) -> dict[str, Any]:
         """Check connection and get server version."""
         return await self._call("ping")
     
-    async def get_state(self) -> dict[str, Any]:
-        """Get full game state snapshot."""
-        return await self._call("get_state")
+    async def get_state(
+        self,
+        include_npcs: bool = True,
+        include_inventory: bool = False,
+        include_performance: bool = False,
+    ) -> dict[str, Any]:
+        """Get full game state snapshot.
+        
+        Args:
+            include_npcs: Include NPC data (default True)
+            include_inventory: Include inventory data (default False)
+            include_performance: Include performance metrics (default False)
+        """
+        return await self._call("get_state", {
+            "include_npcs": include_npcs,
+            "include_inventory": include_inventory,
+            "include_performance": include_performance,
+        })
+    
+    # =========================================================================
+    # Input - GodotTestDriver-inspired patterns
+    # =========================================================================
     
     async def send_input(
         self,
         action: str,
-        duration_ms: int = 0,
-        press: bool = True,
-        release: bool = True,
+        duration_ms: int = 100,
+        strength: float = 1.0,
     ) -> dict[str, Any]:
-        """Send player input.
+        """Send player input with duration.
         
         Args:
             action: Input action name (e.g., "move_right", "interact")
-            duration_ms: Hold duration in milliseconds (0 for tap)
-            press: Whether to press the action
-            release: Whether to release the action
+            duration_ms: Hold duration in milliseconds
+            strength: Action strength (0.0 - 1.0)
         """
         return await self._call("send_input", {
             "action": action,
             "duration_ms": duration_ms,
-            "press": press,
-            "release": release,
+            "strength": strength,
         })
     
-    async def send_sequence(self, sequence: list[dict[str, Any] | str]) -> dict[str, Any]:
-        """Send a sequence of inputs.
+    async def hold_action(self, action: str, strength: float = 1.0) -> dict[str, Any]:
+        """Hold an input action indefinitely until release_action is called.
         
         Args:
-            sequence: List of input dictionaries or shorthand strings
-                      e.g., [{"action": "move_right", "duration_ms": 500}, "interact"]
-                      or ["right:500", "wait:100", "interact"]
+            action: Input action name
+            strength: Action strength (0.0 - 1.0)
         """
-        return await self._call("send_input", {"sequence": sequence})
+        return await self._call("hold_action", {"action": action, "strength": strength})
+    
+    async def release_action(self, action: str) -> dict[str, Any]:
+        """Release a held input action.
+        
+        Args:
+            action: Input action name to release
+        """
+        return await self._call("release_action", {"action": action})
+    
+    async def click_at(
+        self,
+        x: float,
+        y: float,
+        button: int = 1,
+    ) -> dict[str, Any]:
+        """Click the mouse at a specific position.
+        
+        Args:
+            x: X coordinate in viewport space
+            y: Y coordinate in viewport space
+            button: Mouse button (1=left, 2=right, 3=middle)
+        """
+        return await self._call("click_at", {"x": x, "y": y, "button": button})
+    
+    async def move_mouse(self, x: float, y: float) -> dict[str, Any]:
+        """Move the mouse to a specific position."""
+        return await self._call("move_mouse", {"x": x, "y": y})
+    
+    # =========================================================================
+    # Time Control
+    # =========================================================================
+    
+    async def time_advance(
+        self,
+        days: int = 0,
+        hours: int = 0,
+        minutes: int = 0,
+    ) -> dict[str, Any]:
+        """Advance game time.
+        
+        Args:
+            days: Days to advance
+            hours: Hours to advance
+            minutes: Minutes to advance
+            
+        Returns:
+            Dict with success, advanced amounts, and current_time
+        """
+        return await self._call("time_advance", {
+            "days": days,
+            "hours": hours,
+            "minutes": minutes,
+        })
+    
+    async def time_set(
+        self,
+        day: int | None = None,
+        hour: int | None = None,
+        minute: int | None = None,
+        season: str | None = None,
+        year: int | None = None,
+    ) -> dict[str, Any]:
+        """Set game time directly.
+        
+        Args:
+            day: Day number
+            hour: Hour (0-23)
+            minute: Minute (0-59)
+            season: Season name ("SPRING", "SUMMER", "AUTUMN", "WINTER")
+            year: Year number
+        """
+        params = {}
+        if day is not None:
+            params["day"] = day
+        if hour is not None:
+            params["hour"] = hour
+        if minute is not None:
+            params["minute"] = minute
+        if season is not None:
+            params["season"] = season
+        if year is not None:
+            params["year"] = year
+        return await self._call("time_set", params)
+    
+    async def time_pause(self) -> dict[str, Any]:
+        """Pause game time."""
+        return await self._call("time_pause", {})
+    
+    async def time_resume(self) -> dict[str, Any]:
+        """Resume game time."""
+        return await self._call("time_resume", {})
+    
+    # =========================================================================
+    # NPC State
+    # =========================================================================
+    
+    async def get_npc(self, name: str) -> dict[str, Any]:
+        """Get detailed info about a specific NPC.
+        
+        Args:
+            name: NPC name (case-insensitive)
+            
+        Returns:
+            Dict with found, npc (if found) containing position, relationship,
+            dialogue_flags, quest_state, etc.
+        """
+        return await self._call("get_npc", {"name": name})
+    
+    async def get_all_npcs(self) -> dict[str, Any]:
+        """Get info about all NPCs.
+        
+        Returns:
+            Dict with npcs array and count
+        """
+        return await self._call("get_all_npcs", {})
+    
+    # =========================================================================
+    # Inventory
+    # =========================================================================
+    
+    async def get_inventory(self) -> dict[str, Any]:
+        """Get player inventory contents.
+        
+        Returns:
+            Dict with items array, capacity, and used count
+        """
+        return await self._call("get_inventory", {})
+    
+    async def add_item(self, item: str, quantity: int = 1) -> dict[str, Any]:
+        """Add item to player inventory.
+        
+        Args:
+            item: Item name/ID
+            quantity: Amount to add
+        """
+        return await self._call("add_item", {"item": item, "quantity": quantity})
+    
+    async def remove_item(self, item: str, quantity: int = 1) -> dict[str, Any]:
+        """Remove item from player inventory.
+        
+        Args:
+            item: Item name/ID
+            quantity: Amount to remove
+        """
+        return await self._call("remove_item", {"item": item, "quantity": quantity})
+    
+    # =========================================================================
+    # Save/Load
+    # =========================================================================
+    
+    async def save_game(self, slot: str = "playtest_save") -> dict[str, Any]:
+        """Save the game.
+        
+        Args:
+            slot: Save slot name
+        """
+        return await self._call("save_game", {"slot": slot})
+    
+    async def load_game(self, slot: str = "playtest_save") -> dict[str, Any]:
+        """Load a saved game.
+        
+        Args:
+            slot: Save slot name
+        """
+        return await self._call("load_game", {"slot": slot})
+    
+    async def list_saves(self) -> dict[str, Any]:
+        """List all save files.
+        
+        Returns:
+            Dict with saves array (name, path, modified) and count
+        """
+        return await self._call("list_saves", {})
+    
+    async def delete_save(self, slot: str) -> dict[str, Any]:
+        """Delete a save file.
+        
+        Args:
+            slot: Save slot name
+        """
+        return await self._call("delete_save", {"slot": slot})
+    
+    # =========================================================================
+    # Performance
+    # =========================================================================
+    
+    async def get_performance(self) -> dict[str, Any]:
+        """Get performance metrics.
+        
+        Returns:
+            Dict with fps, frame_time_ms, avg_frame_ms, max_frame_ms,
+            memory (static_mb, peak_mb), objects (total, orphan_nodes, resources),
+            rendering (draw_calls, vertices)
+        """
+        return await self._call("get_performance", {})
+    
+    async def assert_performance(
+        self,
+        min_fps: float | None = None,
+        max_frame_ms: float | None = None,
+        max_avg_frame_ms: float | None = None,
+        max_memory_mb: float | None = None,
+        max_orphan_nodes: int | None = None,
+    ) -> dict[str, Any]:
+        """Assert performance meets requirements.
+        
+        Args:
+            min_fps: Minimum acceptable FPS
+            max_frame_ms: Maximum single frame time in ms
+            max_avg_frame_ms: Maximum average frame time in ms
+            max_memory_mb: Maximum memory usage in MB
+            max_orphan_nodes: Maximum orphan node count
+            
+        Returns:
+            Dict with success, failures array, and performance metrics
+        """
+        params = {}
+        if min_fps is not None:
+            params["min_fps"] = min_fps
+        if max_frame_ms is not None:
+            params["max_frame_ms"] = max_frame_ms
+        if max_avg_frame_ms is not None:
+            params["max_avg_frame_ms"] = max_avg_frame_ms
+        if max_memory_mb is not None:
+            params["max_memory_mb"] = max_memory_mb
+        if max_orphan_nodes is not None:
+            params["max_orphan_nodes"] = max_orphan_nodes
+        return await self._call("assert_performance", params)
+    
+    # =========================================================================
+    # Error Capture
+    # =========================================================================
+    
+    async def start_error_capture(self) -> dict[str, Any]:
+        """Start capturing errors and warnings.
+        
+        Returns:
+            Dict with success and capturing status
+        """
+        return await self._call("start_error_capture", {})
+    
+    async def stop_error_capture(self) -> dict[str, Any]:
+        """Stop capturing errors.
+        
+        Returns:
+            Dict with success, capturing status, and error_count
+        """
+        return await self._call("stop_error_capture", {})
+    
+    async def get_captured_errors(self) -> dict[str, Any]:
+        """Get captured errors.
+        
+        Returns:
+            Dict with errors array, count, and capturing status
+        """
+        return await self._call("get_captured_errors", {})
+    
+    # =========================================================================
+    # Recording & Playback
+    # =========================================================================
+    
+    async def start_recording(self) -> dict[str, Any]:
+        """Start recording inputs.
+        
+        Returns:
+            Dict with success and recording status
+        """
+        return await self._call("start_recording", {})
+    
+    async def stop_recording(self, save_to: str | None = None) -> dict[str, Any]:
+        """Stop recording inputs.
+        
+        Args:
+            save_to: Optional path to save recording
+            
+        Returns:
+            Dict with success, duration_ms, input_count, and optionally inputs
+        """
+        params = {}
+        if save_to:
+            params["save_to"] = save_to
+        return await self._call("stop_recording", params)
+    
+    async def playback(
+        self,
+        inputs: list[dict[str, Any]] | None = None,
+        load_from: str | None = None,
+    ) -> dict[str, Any]:
+        """Play back recorded inputs.
+        
+        Args:
+            inputs: List of input events to replay
+            load_from: Path to load recording from
+            
+        Returns:
+            Dict with success and input_count
+        """
+        params = {}
+        if inputs:
+            params["inputs"] = inputs
+        if load_from:
+            params["load_from"] = load_from
+        return await self._call("playback", params)
+    
+    # =========================================================================
+    # Visual Regression
+    # =========================================================================
     
     async def screenshot(
         self,
-        include_ui: bool = True,
+        name: str | None = None,
         scale: float = 1.0,
         format: str = "png",
     ) -> dict[str, Any]:
         """Capture a screenshot.
         
+        Args:
+            name: Optional filename (without extension)
+            scale: Scale factor
+            format: Image format (png or jpg)
+            
         Returns:
-            Dictionary with 'path', 'width', 'height', 'timestamp_ms'
+            Dict with success, path, and size
         """
-        return await self._call("screenshot", {
-            "include_ui": include_ui,
-            "scale": scale,
-            "format": format,
+        params = {"scale": scale, "format": format}
+        if name:
+            params["name"] = name
+        return await self._call("screenshot", params)
+    
+    async def save_baseline(self, name: str) -> dict[str, Any]:
+        """Save current screen as a baseline for comparison.
+        
+        Args:
+            name: Baseline name
+            
+        Returns:
+            Dict with success, path, and size
+        """
+        return await self._call("save_baseline", {"name": name})
+    
+    async def compare_screenshot(
+        self,
+        name: str,
+        threshold: float = 0.01,
+    ) -> dict[str, Any]:
+        """Compare current screen against a baseline.
+        
+        Args:
+            name: Baseline name to compare against
+            threshold: Maximum allowed difference ratio (0.0 - 1.0)
+            
+        Returns:
+            Dict with success, match, difference_ratio, different_pixels,
+            total_pixels, threshold, and diff_image path if mismatch
+        """
+        return await self._call("compare_screenshot", {
+            "name": name,
+            "threshold": threshold,
         })
     
-    async def query_entity(self, filter: dict[str, Any]) -> dict[str, Any]:
-        """Query a specific entity."""
-        return await self._call("query", {"type": "entity", "filter": filter})
+    # =========================================================================
+    # Query
+    # =========================================================================
+    
+    async def query_node(self, path: str) -> dict[str, Any]:
+        """Query a node by path."""
+        return await self._call("query", {"type": "node", "path": path})
     
     async def query_entities_near(
         self,
         x: float,
         y: float,
-        radius: float = 5.0,
+        radius: float = 100.0,
     ) -> dict[str, Any]:
         """Query entities near a position."""
         return await self._call("query", {
@@ -206,48 +565,89 @@ class PlaytestClient:
             "position": {"x": x, "y": y},
         })
     
-    async def query_node(self, path: str) -> dict[str, Any]:
-        """Query a node by path."""
-        return await self._call("query", {"type": "node", "path": path})
+    async def query_input_actions(self) -> dict[str, Any]:
+        """Get list of all available input actions."""
+        return await self._call("query", {"type": "input_actions"})
+    
+    # =========================================================================
+    # Wait Conditions
+    # =========================================================================
     
     async def wait_for(
         self,
         condition: str,
         timeout_ms: int = 5000,
     ) -> dict[str, Any]:
-        """Wait for a condition to be true.
+        """Check if a condition is true.
+        
+        Note: The actual waiting loop should be done client-side.
+        This method checks the condition once.
         
         Args:
-            condition: Condition string (e.g., "player.state == 'idle'")
-            timeout_ms: Maximum wait time in milliseconds
+            condition: Condition string (e.g., "player.health > 50")
+            timeout_ms: Timeout hint for client-side loop
+            
+        Returns:
+            Dict with condition, met (bool), and current_time_ms
         """
-        return await self._call("wait", {
+        return await self._call("wait_for", {
             "condition": condition,
             "timeout_ms": timeout_ms,
         })
     
-    async def wait_ms(self, duration_ms: int) -> dict[str, Any]:
-        """Wait for a fixed duration."""
-        return await self._call("wait", {"timeout_ms": duration_ms})
-    
-    async def subscribe_events(self, event_types: list[str]) -> dict[str, Any]:
-        """Subscribe to game events."""
-        return await self._call("events", {"subscribe": event_types})
-    
-    async def unsubscribe_events(self, event_types: list[str]) -> dict[str, Any]:
-        """Unsubscribe from game events."""
-        return await self._call("events", {"unsubscribe": event_types})
-    
-    def on_event(self, handler: Callable[[str, dict[str, Any]], None]) -> None:
-        """Register an event handler."""
-        self._event_handlers.append(handler)
-    
-    async def execute(self, expression: str) -> dict[str, Any]:
-        """Execute a GDScript expression (debug only).
+    async def wait_until(
+        self,
+        condition: str,
+        timeout_ms: int = 5000,
+        poll_ms: int = 100,
+    ) -> dict[str, Any]:
+        """Wait until a condition is true (client-side polling).
         
-        Warning: This is potentially dangerous and may be disabled on the server.
+        Args:
+            condition: Condition string
+            timeout_ms: Maximum wait time
+            poll_ms: Time between checks
+            
+        Returns:
+            Dict with success, waited_ms, and condition_met
         """
-        return await self._call("execute", {"expression": expression})
+        start_ms = 0
+        elapsed_ms = 0
+        
+        while elapsed_ms < timeout_ms:
+            result = await self.wait_for(condition, timeout_ms - elapsed_ms)
+            
+            if start_ms == 0:
+                start_ms = result.get("current_time_ms", 0)
+            
+            if result.get("met", False):
+                return {
+                    "success": True,
+                    "waited_ms": elapsed_ms,
+                    "condition_met": True,
+                }
+            
+            await asyncio.sleep(poll_ms / 1000.0)
+            elapsed_ms = result.get("current_time_ms", 0) - start_ms
+        
+        return {
+            "success": False,
+            "waited_ms": elapsed_ms,
+            "condition_met": False,
+            "timeout": True,
+        }
+    
+    # =========================================================================
+    # Scene/Node Control
+    # =========================================================================
+    
+    async def scene_change(self, scene: str) -> dict[str, Any]:
+        """Change to a different scene.
+        
+        Args:
+            scene: Scene path (e.g., "res://scenes/main/main.tscn")
+        """
+        return await self._call("scene_change", {"scene": scene})
     
     async def call_method(
         self,
@@ -268,93 +668,20 @@ class PlaytestClient:
             "args": args or [],
         })
     
-    async def scene_change(self, scene: str) -> dict[str, Any]:
-        """Change to a different scene.
+    async def execute(self, expression: str) -> dict[str, Any]:
+        """Execute a GDScript expression (debug only).
         
-        Args:
-            scene: Scene path (e.g., "res://scenes/main/main.tscn")
+        Warning: This is potentially dangerous and may be disabled.
         """
-        return await self._call("scene_change", {"scene": scene})
+        return await self._call("execute", {"expression": expression})
     
     # =========================================================================
-    # Input - GodotTestDriver-inspired patterns
+    # Event Handling
     # =========================================================================
     
-    async def hold_action(self, action: str, strength: float = 1.0) -> dict[str, Any]:
-        """Hold an input action indefinitely until release_action is called.
-        
-        Useful for continuous movement or held buttons.
-        
-        Args:
-            action: Input action name
-            strength: Action strength (0.0 - 1.0)
-        """
-        return await self._call("hold_action", {"action": action, "strength": strength})
-    
-    async def release_action(self, action: str) -> dict[str, Any]:
-        """Release a held input action.
-        
-        Args:
-            action: Input action name to release
-        """
-        return await self._call("release_action", {"action": action})
-    
-    async def click_at(
-        self,
-        x: float,
-        y: float,
-        button: int = 1,  # MOUSE_BUTTON_LEFT
-    ) -> dict[str, Any]:
-        """Click the mouse at a specific position.
-        
-        Args:
-            x: X coordinate in viewport space
-            y: Y coordinate in viewport space
-            button: Mouse button (1=left, 2=right, 3=middle)
-        """
-        return await self._call("click_at", {"x": x, "y": y, "button": button})
-    
-    async def move_mouse(self, x: float, y: float) -> dict[str, Any]:
-        """Move the mouse to a specific position.
-        
-        Args:
-            x: X coordinate in viewport space
-            y: Y coordinate in viewport space
-        """
-        return await self._call("move_mouse", {"x": x, "y": y})
-    
-    async def wait_for(
-        self,
-        condition: str,
-        timeout_ms: int = 5000,
-    ) -> dict[str, Any]:
-        """Wait for a condition to be true.
-        
-        The condition is evaluated against game state. Supports simple
-        comparisons like:
-        - "player.health > 50"
-        - "scene.name == 'Main'"
-        - "world.game_state == 'PLAYING'"
-        
-        Args:
-            condition: Condition string
-            timeout_ms: Maximum wait time in milliseconds
-            
-        Returns:
-            Dict with success, waited_ms, and condition_met fields
-        """
-        return await self._call("wait_for", {
-            "condition": condition,
-            "timeout_ms": timeout_ms,
-        })
-    
-    async def query_input_actions(self) -> dict[str, Any]:
-        """Get list of all available input actions.
-        
-        Returns:
-            Dict with 'actions' list
-        """
-        return await self._call("query", {"type": "input_actions"})
+    def on_event(self, handler: Callable[[str, dict[str, Any]], None]) -> None:
+        """Register an event handler."""
+        self._event_handlers.append(handler)
 
 
 class PlaytestError(Exception):

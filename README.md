@@ -6,12 +6,23 @@ AI-assisted playtesting framework for Godot 4.x games.
 
 ## Features
 
+### Core
 - ✅ **External Control** — TCP/JSON-RPC server for AI agents and CI pipelines
 - ✅ **State Inspection** — Player position, health, NPCs, world time, UI state
 - ✅ **Input Simulation** — Actions, mouse clicks, held inputs (GodotTestDriver patterns)
 - ✅ **Screenshots** — Capture viewport for visual verification
 - ✅ **Scenarios** — YAML-based test scripts with assertions
-- ✅ **Zero Game Changes** — Just add the plugin, no code modifications
+
+### v0.3.0 — New Features
+- ✅ **Time Control** — Advance game time by days/hours/minutes
+- ✅ **NPC State** — Query NPC position, relationship, dialogue flags, quest state
+- ✅ **Save/Load** — Save/load game state, list/delete saves
+- ✅ **Performance Metrics** — FPS, frame times, memory, object counts
+- ✅ **Performance Assertions** — Fail tests if below thresholds
+- ✅ **Error Capture** — Capture errors/warnings during test runs
+- ✅ **Record & Playback** — Record inputs, replay for regression testing
+- ✅ **Visual Regression** — Compare screenshots against baselines
+- ✅ **Inventory** — Get/add/remove items from player inventory
 
 ## Quick Start
 
@@ -46,40 +57,142 @@ playtest run scenarios/smoke_test.yaml
 
 ## API Methods
 
+### Core
 | Method | Description |
 |--------|-------------|
 | `ping` | Check connection, get server version |
 | `get_state` | Full game state snapshot |
-| `send_input` | Send action with optional duration |
+| `screenshot` | Capture viewport |
+
+### Input
+| Method | Description |
+|--------|-------------|
+| `send_input` | Send action with duration |
 | `hold_action` | Hold action until released |
 | `release_action` | Release held action |
 | `click_at` | Mouse click at position |
 | `move_mouse` | Move mouse to position |
-| `screenshot` | Capture viewport |
-| `scene_change` | Direct scene transition |
-| `call_method` | Call method on any node |
-| `query` | Query nodes, entities, tiles |
-| `wait_for` | Check condition (client-side wait) |
 
-## Input Simulation
+### Time Control
+| Method | Description |
+|--------|-------------|
+| `time_advance` | Advance by days/hours/minutes |
+| `time_set` | Set specific time |
+| `time_pause` | Pause game time |
+| `time_resume` | Resume game time |
 
-Inspired by GodotTestDriver's proven patterns:
+### NPC State
+| Method | Description |
+|--------|-------------|
+| `get_npc` | Get specific NPC info |
+| `get_all_npcs` | Get all NPCs |
 
+### Inventory
+| Method | Description |
+|--------|-------------|
+| `get_inventory` | Get player inventory |
+| `add_item` | Add item to inventory |
+| `remove_item` | Remove item from inventory |
+
+### Save/Load
+| Method | Description |
+|--------|-------------|
+| `save_game` | Save to slot |
+| `load_game` | Load from slot |
+| `list_saves` | List save files |
+| `delete_save` | Delete save file |
+
+### Performance
+| Method | Description |
+|--------|-------------|
+| `get_performance` | Get metrics (FPS, memory, etc.) |
+| `assert_performance` | Assert min FPS, max frame time, etc. |
+
+### Error Capture
+| Method | Description |
+|--------|-------------|
+| `start_error_capture` | Start capturing errors |
+| `stop_error_capture` | Stop capturing |
+| `get_captured_errors` | Get captured errors |
+
+### Recording
+| Method | Description |
+|--------|-------------|
+| `start_recording` | Start recording inputs |
+| `stop_recording` | Stop and optionally save |
+| `playback` | Replay recorded inputs |
+
+### Visual Regression
+| Method | Description |
+|--------|-------------|
+| `save_baseline` | Save current screen as baseline |
+| `compare_screenshot` | Compare against baseline |
+
+## Example Usage
+
+### Time Control
 ```python
-# Tap action (100ms default)
-await client.send_input("jump")
+# Skip to evening
+await client.time_advance(hours=6)
 
-# Hold action for duration
-await client.send_input("move_right", duration_ms=500)
+# Set specific time
+await client.time_set(day=5, hour=8, season="SUMMER")
 
-# Manual hold/release
-await client.hold_action("sprint")
-# ... later ...
-await client.release_action("sprint")
+# Check crop growth after time skip
+await client.time_advance(days=3)
+state = await client.get_state()
+```
 
-# Mouse control
-await client.click_at(640, 360)
-await client.move_mouse(100, 200)
+### NPC Interaction
+```python
+# Get all NPCs
+npcs = await client.get_all_npcs()
+for npc in npcs['npcs']:
+    print(f"{npc['name']}: relationship={npc.get('relationship', 0)}")
+
+# Check specific NPC
+iris = await client.get_npc("Iris")
+if iris['found']:
+    print(f"Iris mood: {iris['npc'].get('mood')}")
+```
+
+### Performance Testing
+```python
+# Get metrics
+perf = await client.get_performance()
+print(f"FPS: {perf['fps']}, Memory: {perf['memory']['static_mb']}MB")
+
+# Assert thresholds
+result = await client.assert_performance(
+    min_fps=30,
+    max_frame_ms=33,
+    max_memory_mb=500
+)
+if not result['success']:
+    print(f"Performance failed: {result['failures']}")
+```
+
+### Visual Regression
+```python
+# Save baseline (do once)
+await client.save_baseline("main_menu")
+
+# Later: compare against baseline
+result = await client.compare_screenshot("main_menu", threshold=0.01)
+if not result['match']:
+    print(f"Visual diff: {result['difference_ratio']*100:.1f}%")
+    print(f"Diff image: {result['diff_image']}")
+```
+
+### Recording & Playback
+```python
+# Record a play session
+await client.start_recording()
+# ... play the game ...
+recording = await client.stop_recording(save_to="user://recordings/session1.json")
+
+# Replay later
+await client.playback(load_from="user://recordings/session1.json")
 ```
 
 ## Scenario Format
@@ -102,6 +215,17 @@ steps:
     assert:
       - "world.game_state == 'PLAYING'"
       - "player.exists == true"
+
+  - name: "Performance check"
+    assert_performance:
+      min_fps: 30
+      max_frame_ms: 50
+
+  - name: "Time skip test"
+    time_advance:
+      days: 3
+    assert:
+      - "world.time.day == 4"
 ```
 
 ## Architecture
@@ -113,18 +237,9 @@ steps:
 └─────────────────┘                    └─────────────────┘
 ```
 
-- **PlaytestServer** — GDScript autoload, listens on localhost:9876
-- **Python Client** — Async client with typed methods
-- **Scenario Runner** — YAML parser with assertions and screenshots
-
 ## Credits
 
 Input simulation patterns adapted from [GodotTestDriver](https://github.com/chickensoft-games/GodotTestDriver) by [derkork](https://github.com/derkork), maintained by [Chickensoft](https://chickensoft.games).
-
-Key patterns borrowed:
-- `Input.parse_input_event()` + `Input.action_press()` + `Input.flush_buffered_events()` for reliable input
-- Mouse movement with `InputEventMouseMotion` and proper relative coordinates
-- Condition evaluation with timeout handling
 
 ## License
 
