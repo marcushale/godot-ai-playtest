@@ -604,9 +604,7 @@ class PlaytestClient:
         """
         return await self._call("get_tile", {"x": x, "y": y})
 
-    async def get_tiles_in_radius(
-        self, x: int, y: int, radius: int = 1
-    ) -> dict[str, Any]:
+    async def get_tiles_in_radius(self, x: int, y: int, radius: int = 1) -> dict[str, Any]:
         """Get tiles in a radius around a point.
 
         Args:
@@ -617,13 +615,9 @@ class PlaytestClient:
         Returns:
             Dict with tiles array
         """
-        return await self._call(
-            "get_tiles_in_radius", {"x": x, "y": y, "radius": radius}
-        )
+        return await self._call("get_tiles_in_radius", {"x": x, "y": y, "radius": radius})
 
-    async def get_entities_at(
-        self, x: int, y: int, radius: float = 32.0
-    ) -> dict[str, Any]:
+    async def get_entities_at(self, x: int, y: int, radius: float = 32.0) -> dict[str, Any]:
         """Get entities (NPCs, items, structures) near a tile.
 
         Args:
@@ -634,9 +628,7 @@ class PlaytestClient:
         Returns:
             Dict with entities array
         """
-        return await self._call(
-            "get_entities_at", {"x": x, "y": y, "radius": radius}
-        )
+        return await self._call("get_entities_at", {"x": x, "y": y, "radius": radius})
 
     # =========================================================================
     # NPC Interaction
@@ -653,9 +645,7 @@ class PlaytestClient:
         """
         return await self._call("interact_npc", {"name": name})
 
-    async def give_gift(
-        self, npc: str, item: str, quantity: int = 1
-    ) -> dict[str, Any]:
+    async def give_gift(self, npc: str, item: str, quantity: int = 1) -> dict[str, Any]:
         """Give an item to an NPC as a gift.
 
         Args:
@@ -666,9 +656,7 @@ class PlaytestClient:
         Returns:
             Dict with success and NPC reaction
         """
-        return await self._call(
-            "give_gift", {"npc": npc, "item": item, "quantity": quantity}
-        )
+        return await self._call("give_gift", {"npc": npc, "item": item, "quantity": quantity})
 
     async def talk_to_npc(self, npc: str, message: str = "") -> dict[str, Any]:
         """Start a conversation with an NPC.
@@ -686,9 +674,7 @@ class PlaytestClient:
     # Teleport
     # =========================================================================
 
-    async def teleport_to(
-        self, x: float, y: float, tile_coords: bool = False
-    ) -> dict[str, Any]:
+    async def teleport_to(self, x: float, y: float, tile_coords: bool = False) -> dict[str, Any]:
         """Teleport the player to a position.
 
         Args:
@@ -699,9 +685,7 @@ class PlaytestClient:
         Returns:
             Dict with old and new positions
         """
-        return await self._call(
-            "teleport_to", {"x": x, "y": y, "tile_coords": tile_coords}
-        )
+        return await self._call("teleport_to", {"x": x, "y": y, "tile_coords": tile_coords})
 
     async def teleport_to_npc(
         self, npc: str, offset_x: float = 32.0, offset_y: float = 0.0
@@ -882,9 +866,7 @@ class PlaytestClient:
             payload["value"] = value
         return await self._call("call_system", payload)
 
-    async def hook(
-        self, system_method: str, **kwargs: Any
-    ) -> dict[str, Any]:
+    async def hook(self, system_method: str, **kwargs: Any) -> dict[str, Any]:
         """Convenience shorthand using dot-notation.
 
         Equivalent to call_system but accepts "System.method" as a single
