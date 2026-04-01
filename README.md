@@ -303,6 +303,45 @@ playtest run smoke_test.yaml
 | `call_method(node, method, args)` | Call method on node |
 | `query_node(path)` | Get node info |
 
+### Universal Hook System
+
+Lets any node expose its own playtest API with **zero server changes**. Add the `playtest` group to a node and implement `_playtest_*` methods:
+
+```gdscript
+# In any GDScript file:
+func _ready() -> void:
+    if OS.is_debug_build():
+        add_to_group("playtest")
+
+func _playtest_get_state() -> Dictionary:
+    return {"my_value": current_value}
+
+func _playtest_call_reset(params: Dictionary) -> Dictionary:
+    reset()
+    return {"success": true}
+```
+
+```python
+# From Python — no server changes needed:
+await client.get_system_state("MySystem")
+await client.call_system("MySystem", "reset")
+await client.hook("MySystem.reset")  # dot-notation shorthand
+
+# Audit everything available:
+for node in (await client.discover_hooks())["nodes"]:
+    print(node["name"], node["methods"])
+```
+
+| Method | Description |
+|--------|-------------|
+| `list_systems()` | All nodes in the `playtest` group + their hooks |
+| `discover_hooks()` | All `_playtest_*` methods in the tree (audit tool) |
+| `get_system_state(system)` | Call `_playtest_get_state()` on a system |
+| `call_system(system, method, params, value)` | Route to a hook |
+| `hook("System.method", **kwargs)` | Dot-notation shorthand |
+
+📖 **Full guide:** [`docs/universal-hooks.md`](docs/universal-hooks.md)
+
 ## Configuration
 
 In your Godot project, you can configure the server via `project.godot`:

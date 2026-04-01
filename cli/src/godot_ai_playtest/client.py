@@ -820,6 +820,91 @@ class PlaytestClient:
         )
 
     # =========================================================================
+    # Universal Hook System
+    # =========================================================================
+
+    async def list_systems(self) -> dict[str, Any]:
+        """List all registered playtest systems (nodes in the 'playtest' group).
+
+        Returns:
+            Dict with count and systems array. Each system has name, node_path,
+            methods (advertised hooks), and has_state flag.
+        """
+        return await self._call("list_systems", {})
+
+    async def discover_hooks(self) -> dict[str, Any]:
+        """Discover every _playtest_* method in the scene tree.
+
+        More thorough than list_systems — finds hooks on nodes even if they
+        haven't joined the 'playtest' group. Useful during development.
+
+        Returns:
+            Dict with count, nodes array, and a tip about group registration.
+        """
+        return await self._call("discover_hooks", {})
+
+    async def get_system_state(self, system: str) -> dict[str, Any]:
+        """Call _playtest_get_state() on a registered system.
+
+        Args:
+            system: System name (case-insensitive, e.g. "weather", "SaveManager")
+
+        Returns:
+            Dict with system name and state dict.
+        """
+        return await self._call("get_system_state", {"system": system})
+
+    async def call_system(
+        self,
+        system: str,
+        method: str,
+        params: dict[str, Any] | None = None,
+        value: Any = None,
+    ) -> dict[str, Any]:
+        """Call a hook method on a registered system.
+
+        Routes to _playtest_call_<method>(params) or _playtest_set_<method>(value)
+        depending on which hook the node implements.
+
+        Args:
+            system: System name (e.g. "weather")
+            method: Method name without _playtest_ prefix (e.g. "set_weather")
+            params: Forwarded to _playtest_call_<method>() hooks
+            value: Forwarded to _playtest_set_<method>() hooks
+
+        Returns:
+            Whatever the hook returns.
+        """
+        payload: dict[str, Any] = {"system": system, "method": method}
+        if params is not None:
+            payload["params"] = params
+        if value is not None:
+            payload["value"] = value
+        return await self._call("call_system", payload)
+
+    async def hook(
+        self, system_method: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        """Convenience shorthand using dot-notation.
+
+        Equivalent to call_system but accepts "System.method" as a single
+        string. Keyword arguments are forwarded as params.
+
+        Example::
+
+            await client.hook("weather.set_weather", weather="rain")
+            await client.hook("NPC_Iris.get_state")
+
+        Args:
+            system_method: "System.method" string
+            **kwargs: Forwarded as the params dict to the hook
+
+        Returns:
+            Whatever the hook returns.
+        """
+        return await self._call(system_method, dict(kwargs))
+
+    # =========================================================================
     # Wait Conditions
     # =========================================================================
 

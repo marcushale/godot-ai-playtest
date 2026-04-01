@@ -330,7 +330,21 @@ func _handle_method(_client: StreamPeerTCP, method: String, params: Dictionary) 
 		"spawn_item":
 			return _spawn_item(params)
 		
+		# === Universal Hook System ===
+		"list_systems":
+			return _list_systems(params)
+		"get_system_state":
+			return _get_system_state(params)
+		"call_system":
+			return _call_system(params)
+		"discover_hooks":
+			return _discover_hooks(params)
+		
 		_:
+			# Try universal hook system before failing
+			var hook_result := _try_universal_hook(method, params)
+			if hook_result != null:
+				return hook_result
 			return {"error": {"code": -32601, "message": "Method not found: " + method}}
 
 
@@ -2507,6 +2521,204 @@ func _spawn_item(params: Dictionary) -> Dictionary:
 			return add_result
 	
 	return {"error": {"code": -32603, "message": "No item spawning system available"}}
+
+
+
+# =============================================================================
+# Universal Hook System
+# =============================================================================
+## The hook system lets ANY node opt into the playtest API with zero server
+## changes. Add the "playtest" group to a node and implement any combo of:
+##
+##   _playtest_get_state() -> Dictionary
+##       Readable snapshot of this system's state.
+##
+##   _playtest_call_<action>(params: Dictionary) -> Dictionary
+##       Callable action. Routed by call_system {system, method, params}.
+##
+##   _playtest_set_<prop>(value: Variant) -> Dictionary
+##       Setter shorthand. Routed by call_system {system, method, value}.
+##
+##   _playtest_list_methods() -> Array[String]
+##       Optional. Advertise supported methods instead of auto-detection.
+##
+##   _playtest_name() -> String
+##       Optional. Override the name used to find this system.
+##
+## Server routes:
+##   list_systems               -> all registered systems + their methods
+##   discover_hooks             -> full manifest of every _playtest_* in tree
+##   get_system_state {system}  -> calls _playtest_get_state on named system
+##   call_system {system, method, [params|value]}  -> routes to hook
+##   "System.method" shorthand  -> dot-notation auto-routed via _try_universal_hook
+
+
+func _get_registered_systems() -> Array:
+	return get_tree().get_nodes_in_group("playtest")
+
+
+func _resolve_system(system_name: String) -> Node:
+	var needle := system_name.to_lower().replace(" ", "").replace("_", "")
+	for node in _get_registered_systems():
+		var node_key: String = (node.name as String).to_lower().replace("_", "")
+		if node_key == needle:
+			return node
+		if node.has_method("_playtest_name"):
+			var alias: String = str(node._playtest_name()).to_lower().replace("_", "")
+			if alias == needle:
+				return node
+	return null
+
+
+func _list_node_hooks(node: Node) -> Array:
+	if node.has_method("_playtest_list_methods"):
+		return node._playtest_list_methods()
+	var hooks: Array = []
+	for method_info in node.get_method_list():
+		var mname: String = method_info["name"]
+		if mname.begins_with("_playtest_") and mname != "_playtest_list_methods" and mname != "_playtest_name":
+			hooks.append(mname.trim_prefix("_playtest_"))
+	return hooks
+
+
+func _list_systems(_params: Dictionary) -> Dictionary:
+	var systems: Array = []
+	for node in _get_registered_systems():
+		var system_name: String = node.name
+		if node.has_method("_playtest_name"):
+			system_name = str(node._playtest_name())
+		systems.append({
+			"name": system_name,
+			"node_path": str(node.get_path()),
+			"methods": _list_node_hooks(node),
+			"has_state": node.has_method("_playtest_get_state"),
+		})
+	return {
+		"count": systems.size(),
+		"systems": systems,
+	}
+
+
+func _discover_hooks(_params: Dictionary) -> Dictionary:
+	## Full manifest: every node in the playtest group PLUS autoloads that
+	## expose any _playtest_* method, whether or not they joined the group.
+	var all_nodes: Array = []
+	for n in get_tree().get_nodes_in_group("playtest"):
+		all_nodes.append(n)
+	# Scan autoloads too
+	var root := get_tree().root
+	for child in root.get_children():
+		if all_nodes.has(child):
+			continue
+		for method_info in child.get_method_list():
+			if method_info["name"].begins_with("_playtest_"):
+				all_nodes.append(child)
+				break
+	var manifest: Array = []
+	for node in all_nodes:
+		var hooks := _list_node_hooks(node)
+		if hooks.is_empty():
+			continue
+		var system_name: String = node.name
+		if node.has_method("_playtest_name"):
+			system_name = str(node._playtest_name())
+		manifest.append({
+			"name": system_name,
+			"node_path": str(node.get_path()),
+			"in_playtest_group": get_tree().get_nodes_in_group("playtest").has(node),
+			"methods": hooks,
+		})
+	return {
+		"count": manifest.size(),
+		"nodes": manifest,
+		"tip": "Nodes missing the 'playtest' group won't be routable via call_system — add them to the group.",
+	}
+
+
+func _get_system_state(params: Dictionary) -> Dictionary:
+	var system_name: String = params.get("system", "")
+	if system_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'system' parameter"}}
+	var node := _resolve_system(system_name)
+	if not node:
+		return {"error": {"code": -32602, "message": "System not found: " + system_name + " (is it in the 'playtest' group?)"}}
+	if not node.has_method("_playtest_get_state"):
+		return {"error": {"code": -32603, "message": system_name + " has no _playtest_get_state() method"}}
+	var state: Variant = node._playtest_get_state()
+	return {
+		"system": system_name,
+		"state": state if state is Dictionary else {"value": state},
+	}
+
+
+func _call_system(params: Dictionary) -> Dictionary:
+	var system_name: String = params.get("system", "")
+	var method_name: String = params.get("method", "")
+	if system_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'system' parameter"}}
+	if method_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'method' parameter"}}
+	var node := _resolve_system(system_name)
+	if not node:
+		return {"error": {"code": -32602, "message": "System not found: " + system_name + " (is it in the 'playtest' group?)"}}
+	# Priority 1: _playtest_call_<method>(params)
+	var call_hook := "_playtest_call_" + method_name
+	if node.has_method(call_hook):
+		var call_params: Dictionary = params.get("params", {})
+		var result: Variant = node.call(call_hook, call_params)
+		if result is Dictionary:
+			return result
+		return {"success": true, "result": result}
+	# Priority 2: _playtest_set_<method>(value)
+	var set_hook := "_playtest_set_" + method_name
+	if node.has_method(set_hook):
+		var value: Variant = params.get("value", null)
+		var result: Variant = node.call(set_hook, value)
+		if result is Dictionary:
+			return result
+		return {"success": true, "result": result}
+	# Priority 3: bare _playtest_<method>()
+	var bare_hook := "_playtest_" + method_name
+	if node.has_method(bare_hook):
+		var result: Variant = node.call(bare_hook)
+		if result is Dictionary:
+			return result
+		return {"success": true, "result": result}
+	return {
+		"error": {
+			"code": -32601,
+			"message": "%s has no hook for '%s' (tried %s, %s, %s)" % [
+				system_name, method_name, call_hook, set_hook, bare_hook
+			]
+		}
+	}
+
+
+func _try_universal_hook(method: String, params: Dictionary) -> Variant:
+	## Last-resort fallback for unknown method names.
+	## Supports dot-notation: "WeatherManager.set_weather"
+	## and slash-notation:   "WeatherManager/set_weather"
+	##
+	## Caller params are forwarded as the nested "params" dict so they reach
+	## _playtest_call_<method>(params) correctly. Top-level keys like "value"
+	## are also promoted for _playtest_set_<prop>(value) calls.
+	var has_dot := "." in method
+	var has_slash := "/" in method
+	if not has_dot and not has_slash:
+		return null
+	var sep := "." if has_dot else "/"
+	var parts := method.split(sep, true, 1)
+	if parts.size() != 2:
+		return null
+	var synthesized := {
+		"system": parts[0],
+		"method": parts[1],
+		"params": params,  # forwarded as nested params for _playtest_call_*
+	}
+	# Also promote "value" to top-level for _playtest_set_* calls
+	if "value" in params:
+		synthesized["value"] = params["value"]
+	return _call_system(synthesized)
 
 
 # =============================================================================
