@@ -1,0 +1,59 @@
+# Smoke Test Scenario
+# Verifies basic game functionality works after startup
+
+name: "Smoke Test"
+description: "Basic functionality check - game boots, player can move, UI works"
+timeout_minutes: 2
+
+steps:
+  - name: "Game is running"
+    wait:
+      condition: "scene.current != null"
+      timeout_ms: 5000
+    screenshot: "01_game_running.png"
+  
+  - name: "Player exists"
+    assert:
+      - "player.exists == true"
+    get_state: true
+  
+  - name: "Player can move right"
+    input:
+      action: "move_right"
+      duration_ms: 500
+    wait:
+      condition: "player.state == 'idle'"
+      timeout_ms: 2000
+    assert:
+      - "player.position.x > $previous.player.position.x"
+    screenshot: "02_after_move.png"
+  
+  - name: "Player can move left"
+    get_state: true
+    input:
+      action: "move_left"
+      duration_ms: 500
+    wait:
+      condition: "player.state == 'idle'"
+      timeout_ms: 2000
+    assert:
+      - "player.position.x < $previous.player.position.x"
+  
+  - name: "Can open inventory"
+    input:
+      action: "inventory"
+    wait_ms: 200
+    assert:
+      - "ui.open_panels contains 'inventory'"
+    screenshot: "03_inventory_open.png"
+  
+  - name: "Can close inventory"
+    input:
+      action: "cancel"
+    wait_ms: 200
+    assert:
+      - "ui.open_panels not contains 'inventory'"
+
+on_failure:
+  screenshot: "failure_state.png"
+  dump_state: "failure_state.json"

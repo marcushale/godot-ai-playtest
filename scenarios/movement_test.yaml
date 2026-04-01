@@ -1,0 +1,42 @@
+# Movement Test Scenario
+# Verifies player movement in all directions
+
+name: "Movement Test"
+description: "Test player movement in all four directions"
+
+steps:
+  - name: "Get starting position"
+    get_state: true
+    screenshot: "start_position.png"
+  
+  - name: "Move right"
+    input: {action: "move_right", duration_ms: 300}
+    wait: {condition: "player.state == 'idle'", timeout_ms: 2000}
+    assert:
+      - "player.position.x > $previous.player.position.x"
+  
+  - name: "Move left"
+    get_state: true
+    input: {action: "move_left", duration_ms: 300}
+    wait: {condition: "player.state == 'idle'", timeout_ms: 2000}
+    assert:
+      - "player.position.x < $previous.player.position.x"
+  
+  - name: "Move down"
+    get_state: true
+    input: {action: "move_down", duration_ms: 300}
+    wait: {condition: "player.state == 'idle'", timeout_ms: 2000}
+    assert:
+      - "player.position.y > $previous.player.position.y"
+  
+  - name: "Move up"
+    get_state: true
+    input: {action: "move_up", duration_ms: 300}
+    wait: {condition: "player.state == 'idle'", timeout_ms: 2000}
+    assert:
+      - "player.position.y < $previous.player.position.y"
+    screenshot: "end_position.png"
+
+on_failure:
+  screenshot: "movement_failure.png"
+  dump_state: "movement_failure.json"

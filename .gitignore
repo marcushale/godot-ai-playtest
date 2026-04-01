@@ -1,0 +1,56 @@
+# .gitignore for Godot Playtest
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Godot
+.godot/
+*.import
+export.cfg
+export_presets.cfg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+*.png
+*.jpg
+failure_*.json
+test_results/
+screenshots/
