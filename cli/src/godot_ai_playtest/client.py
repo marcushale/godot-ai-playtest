@@ -683,6 +683,143 @@ class PlaytestClient:
         return await self._call("talk_to_npc", {"npc": npc, "message": message})
 
     # =========================================================================
+    # Teleport
+    # =========================================================================
+
+    async def teleport_to(
+        self, x: float, y: float, tile_coords: bool = False
+    ) -> dict[str, Any]:
+        """Teleport the player to a position.
+
+        Args:
+            x: X coordinate (pixels or tiles)
+            y: Y coordinate (pixels or tiles)
+            tile_coords: If True, interpret x/y as tile coordinates
+
+        Returns:
+            Dict with old and new positions
+        """
+        return await self._call(
+            "teleport_to", {"x": x, "y": y, "tile_coords": tile_coords}
+        )
+
+    async def teleport_to_npc(
+        self, npc: str, offset_x: float = 32.0, offset_y: float = 0.0
+    ) -> dict[str, Any]:
+        """Teleport the player near an NPC.
+
+        Args:
+            npc: NPC name (e.g., "Iris")
+            offset_x: X offset from NPC position
+            offset_y: Y offset from NPC position
+
+        Returns:
+            Dict with NPC position and new player position
+        """
+        return await self._call(
+            "teleport_to_npc", {"npc": npc, "offset_x": offset_x, "offset_y": offset_y}
+        )
+
+    # =========================================================================
+    # Weather Control
+    # =========================================================================
+
+    async def get_weather(self) -> dict[str, Any]:
+        """Get current weather conditions.
+
+        Returns:
+            Dict with weather_type (int), weather_name (str), available_types
+        """
+        return await self._call("get_weather", {})
+
+    async def set_weather(self, weather: str | int) -> dict[str, Any]:
+        """Set the weather.
+
+        Args:
+            weather: Weather name ("clear", "rain", "snow", "fog", "storm", "heat_wave")
+                    or type int (0-5)
+
+        Returns:
+            Dict with old and new weather
+        """
+        return await self._call("set_weather", {"weather": weather})
+
+    # =========================================================================
+    # Goal/Quest System
+    # =========================================================================
+
+    async def get_goals(self) -> dict[str, Any]:
+        """Get all NPC goals.
+
+        Returns:
+            Dict with count and goals array
+        """
+        return await self._call("get_goals", {})
+
+    async def get_npc_goal(self, npc: str) -> dict[str, Any]:
+        """Get a specific NPC's current goal.
+
+        Args:
+            npc: NPC name
+
+        Returns:
+            Dict with npc, has_goal, and goal details
+        """
+        return await self._call("get_npc_goal", {"npc": npc})
+
+    async def complete_goal(self, npc: str) -> dict[str, Any]:
+        """Force-complete an NPC's current goal.
+
+        Args:
+            npc: NPC name
+
+        Returns:
+            Dict with success status
+        """
+        return await self._call("complete_goal", {"npc": npc})
+
+    # =========================================================================
+    # Spawning
+    # =========================================================================
+
+    async def spawn_item(
+        self,
+        item: str,
+        quantity: int = 1,
+        x: float = 0.0,
+        y: float = 0.0,
+        near_player: bool = True,
+        offset_x: float = 32.0,
+        offset_y: float = 0.0,
+    ) -> dict[str, Any]:
+        """Spawn an item in the world.
+
+        Args:
+            item: Item ID (e.g., "wood_log", "stone_chunk")
+            quantity: Number of items
+            x: X position (if near_player=False)
+            y: Y position (if near_player=False)
+            near_player: If True, spawn near player with offset
+            offset_x: X offset from player
+            offset_y: Y offset from player
+
+        Returns:
+            Dict with success, position, and spawn method used
+        """
+        return await self._call(
+            "spawn_item",
+            {
+                "item": item,
+                "quantity": quantity,
+                "x": x,
+                "y": y,
+                "near_player": near_player,
+                "offset_x": offset_x,
+                "offset_y": offset_y,
+            },
+        )
+
+    # =========================================================================
     # Wait Conditions
     # =========================================================================
 

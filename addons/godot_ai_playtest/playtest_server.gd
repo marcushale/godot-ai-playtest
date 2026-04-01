@@ -306,6 +306,30 @@ func _handle_method(_client: StreamPeerTCP, method: String, params: Dictionary) 
 		"talk_to_npc":
 			return _talk_to_npc(params)
 		
+		# Teleport
+		"teleport_to":
+			return _teleport_to(params)
+		"teleport_to_npc":
+			return _teleport_to_npc(params)
+		
+		# Weather Control
+		"get_weather":
+			return _get_weather(params)
+		"set_weather":
+			return _set_weather(params)
+		
+		# Goal/Quest System
+		"get_goals":
+			return _get_goals(params)
+		"get_npc_goal":
+			return _get_npc_goal(params)
+		"complete_goal":
+			return _complete_goal(params)
+		
+		# Spawning
+		"spawn_item":
+			return _spawn_item(params)
+		
 		_:
 			return {"error": {"code": -32601, "message": "Method not found: " + method}}
 
@@ -2129,6 +2153,360 @@ func _find_npc_by_name(npc_name: String) -> Node:
 			return npc
 	
 	return null
+
+
+# =============================================================================
+# Teleport
+# =============================================================================
+
+func _teleport_to(params: Dictionary) -> Dictionary:
+	var player := _find_player()
+	if not player:
+		return {"error": {"code": -32603, "message": "Player not found"}}
+	
+	var x: float = params.get("x", 0.0)
+	var y: float = params.get("y", 0.0)
+	var tile_coords: bool = params.get("tile_coords", false)
+	
+	var target_pos: Vector2 = Vector2(x, y)
+	
+	# If tile coordinates, convert to world position
+	if tile_coords:
+		var tile_size: int = 16  # Default tile size
+		if "tile_size" in params:
+			tile_size = params.tile_size
+		target_pos = Vector2(x * tile_size + tile_size / 2.0, y * tile_size + tile_size / 2.0)
+	
+	var old_pos: Vector2 = player.global_position
+	player.global_position = target_pos
+	
+	return {
+		"success": true,
+		"old_position": {"x": old_pos.x, "y": old_pos.y},
+		"new_position": {"x": target_pos.x, "y": target_pos.y},
+		"tile_coords": tile_coords,
+	}
+
+
+func _teleport_to_npc(params: Dictionary) -> Dictionary:
+	var npc_name: String = params.get("npc", params.get("name", ""))
+	var offset_x: float = params.get("offset_x", 32.0)
+	var offset_y: float = params.get("offset_y", 0.0)
+	
+	if npc_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'npc' parameter"}}
+	
+	var player := _find_player()
+	if not player:
+		return {"error": {"code": -32603, "message": "Player not found"}}
+	
+	var npc := _find_npc_by_name(npc_name)
+	if not npc:
+		return {"error": {"code": -32602, "message": "NPC not found: " + npc_name}}
+	
+	var old_pos: Vector2 = player.global_position
+	var target_pos: Vector2 = npc.global_position + Vector2(offset_x, offset_y)
+	player.global_position = target_pos
+	
+	return {
+		"success": true,
+		"npc": npc_name,
+		"npc_position": {"x": npc.global_position.x, "y": npc.global_position.y},
+		"old_position": {"x": old_pos.x, "y": old_pos.y},
+		"new_position": {"x": target_pos.x, "y": target_pos.y},
+	}
+
+
+# =============================================================================
+# Weather Control
+# =============================================================================
+
+func _get_weather(_params: Dictionary) -> Dictionary:
+	var main := get_tree().current_scene
+	var weather_mgr: Node = null
+	
+	if main and "weather_manager" in main:
+		weather_mgr = main.weather_manager
+	
+	if not weather_mgr:
+		weather_mgr = get_node_or_null("/root/WeatherManager")
+	
+	if not weather_mgr:
+		return {"error": {"code": -32603, "message": "Weather manager not found"}}
+	
+	var weather_type: int = weather_mgr.current_weather if "current_weather" in weather_mgr else 0
+	var weather_name: String = "unknown"
+	
+	# Map weather enum to name
+	if weather_mgr.has_method("get") and "WEATHER_NAMES" in weather_mgr:
+		var names_dict: Dictionary = weather_mgr.WEATHER_NAMES
+		weather_name = names_dict.get(weather_type, "unknown")
+	else:
+		# Fallback mapping
+		match weather_type:
+			0: weather_name = "clear"
+			1: weather_name = "rain"
+			2: weather_name = "snow"
+			3: weather_name = "fog"
+			4: weather_name = "storm"
+			5: weather_name = "heat_wave"
+	
+	return {
+		"weather_type": weather_type,
+		"weather_name": weather_name,
+		"available_types": ["clear", "rain", "snow", "fog", "storm", "heat_wave"],
+	}
+
+
+func _set_weather(params: Dictionary) -> Dictionary:
+	var weather: Variant = params.get("weather", params.get("type", null))
+	
+	if weather == null:
+		return {"error": {"code": -32602, "message": "Missing 'weather' parameter"}}
+	
+	var main := get_tree().current_scene
+	var weather_mgr: Node = null
+	
+	if main and "weather_manager" in main:
+		weather_mgr = main.weather_manager
+	
+	if not weather_mgr:
+		weather_mgr = get_node_or_null("/root/WeatherManager")
+	
+	if not weather_mgr:
+		return {"error": {"code": -32603, "message": "Weather manager not found"}}
+	
+	# Convert string to enum if needed
+	var weather_type: int = -1
+	if weather is int:
+		weather_type = weather
+	elif weather is String:
+		match weather.to_lower():
+			"clear": weather_type = 0
+			"rain": weather_type = 1
+			"snow": weather_type = 2
+			"fog": weather_type = 3
+			"storm": weather_type = 4
+			"heat_wave", "heatwave": weather_type = 5
+			_:
+				return {"error": {"code": -32602, "message": "Unknown weather type: " + weather}}
+	else:
+		return {"error": {"code": -32602, "message": "weather must be string or int"}}
+	
+	if not weather_mgr.has_method("set_weather"):
+		return {"error": {"code": -32603, "message": "Weather manager has no set_weather method"}}
+	
+	var old_weather: int = weather_mgr.current_weather if "current_weather" in weather_mgr else -1
+	weather_mgr.set_weather(weather_type)
+	
+	# Get the weather name for response
+	var weather_names := ["clear", "rain", "snow", "fog", "storm", "heat_wave"]
+	var old_name: String = weather_names[old_weather] if old_weather >= 0 and old_weather < weather_names.size() else "unknown"
+	var new_name: String = weather_names[weather_type] if weather_type >= 0 and weather_type < weather_names.size() else "unknown"
+	
+	return {
+		"success": true,
+		"old_weather": old_name,
+		"new_weather": new_name,
+		"weather_type": weather_type,
+	}
+
+
+# =============================================================================
+# Goal/Quest System
+# =============================================================================
+
+func _get_goals(_params: Dictionary) -> Dictionary:
+	var main := get_tree().current_scene
+	var goal_system: Node = null
+	
+	if main:
+		goal_system = main.get_node_or_null("GoalSystem")
+	
+	if not goal_system:
+		goal_system = get_node_or_null("/root/GoalSystem")
+	
+	if not goal_system:
+		return {"error": {"code": -32603, "message": "Goal system not found"}}
+	
+	var goals: Array[Dictionary] = []
+	
+	# Get goals from all NPCs
+	var npcs := get_tree().get_nodes_in_group("npc")
+	for npc in npcs:
+		var goal_data := _extract_npc_goal(npc)
+		if not goal_data.is_empty():
+			var npc_name: String = npc.npc_name if "npc_name" in npc else npc.name
+			goals.append({
+				"npc": npc_name,
+				"goal": goal_data,
+			})
+	
+	return {
+		"count": goals.size(),
+		"goals": goals,
+	}
+
+
+func _get_npc_goal(params: Dictionary) -> Dictionary:
+	var npc_name: String = params.get("npc", params.get("name", ""))
+	
+	if npc_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'npc' parameter"}}
+	
+	var npc := _find_npc_by_name(npc_name)
+	if not npc:
+		return {"error": {"code": -32602, "message": "NPC not found: " + npc_name}}
+	
+	var goal_data := _extract_npc_goal(npc)
+	
+	return {
+		"npc": npc_name,
+		"has_goal": not goal_data.is_empty(),
+		"goal": goal_data,
+	}
+
+
+func _extract_npc_goal(npc: Node) -> Dictionary:
+	var goal_component: Node = null
+	
+	if "goal_component" in npc:
+		goal_component = npc.goal_component
+	elif npc.has_node("GoalComponent"):
+		goal_component = npc.get_node("GoalComponent")
+	
+	if not goal_component:
+		return {}
+	
+	var goal_data := {}
+	
+	if "current_goal" in goal_component:
+		var goal: Dictionary = goal_component.current_goal
+		goal_data["tag"] = goal.get("tag", "")
+		goal_data["description"] = goal.get("description", "")
+		goal_data["target"] = goal.get("target", "")
+	
+	if "progress" in goal_component:
+		goal_data["progress"] = goal_component.progress
+	
+	if "is_complete" in goal_component:
+		goal_data["is_complete"] = goal_component.is_complete
+	elif goal_component.has_method("is_complete"):
+		goal_data["is_complete"] = goal_component.is_complete()
+	
+	return goal_data
+
+
+func _complete_goal(params: Dictionary) -> Dictionary:
+	var npc_name: String = params.get("npc", params.get("name", ""))
+	
+	if npc_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'npc' parameter"}}
+	
+	var npc := _find_npc_by_name(npc_name)
+	if not npc:
+		return {"error": {"code": -32602, "message": "NPC not found: " + npc_name}}
+	
+	var goal_component: Node = null
+	if "goal_component" in npc:
+		goal_component = npc.goal_component
+	elif npc.has_node("GoalComponent"):
+		goal_component = npc.get_node("GoalComponent")
+	
+	if not goal_component:
+		return {"error": {"code": -32603, "message": "NPC has no goal component"}}
+	
+	# Try to complete the goal
+	if goal_component.has_method("complete"):
+		goal_component.complete()
+		return {"success": true, "npc": npc_name, "action": "goal_completed"}
+	
+	# Fallback: set progress to max
+	if "progress" in goal_component:
+		goal_component.progress = 1.0
+		return {"success": true, "npc": npc_name, "action": "progress_set_to_max"}
+	
+	return {"error": {"code": -32603, "message": "Cannot complete goal - no complete method"}}
+
+
+# =============================================================================
+# Spawning
+# =============================================================================
+
+func _spawn_item(params: Dictionary) -> Dictionary:
+	var item_id: String = params.get("item", params.get("item_id", ""))
+	var quantity: int = params.get("quantity", 1)
+	var x: float = params.get("x", 0.0)
+	var y: float = params.get("y", 0.0)
+	var near_player: bool = params.get("near_player", true)
+	var offset_x: float = params.get("offset_x", 32.0)
+	var offset_y: float = params.get("offset_y", 0.0)
+	
+	if item_id.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'item' parameter"}}
+	
+	var spawn_pos := Vector2(x, y)
+	
+	if near_player:
+		var player := _find_player()
+		if player:
+			spawn_pos = player.global_position + Vector2(offset_x, offset_y)
+	
+	# Try to find ItemDropFactory or similar spawner
+	var main := get_tree().current_scene
+	
+	# Method 1: Use ResourceDrop if available
+	var resource_drop_scene: PackedScene = null
+	if ResourceLoader.exists("res://scenes/objects/resource_drop.tscn"):
+		resource_drop_scene = load("res://scenes/objects/resource_drop.tscn")
+	
+	if resource_drop_scene:
+		# Create ResourceDefinition
+		var ResourceDef = load("res://scripts/resources/resource_definition.gd")
+		var definition: Resource = null
+		
+		if ResourceDef:
+			definition = ResourceDef.new()
+			definition.id = StringName(item_id)
+			definition.display_name = item_id.replace("_", " ").capitalize()
+			definition.stack_size = 999
+			definition.discovered = true
+		
+		# Spawn the drop
+		var drop: Node2D = resource_drop_scene.instantiate()
+		drop.global_position = spawn_pos
+		
+		if drop.has_method("initialize") and definition:
+			drop.initialize(definition, quantity)
+		elif "resource_definition" in drop:
+			drop.resource_definition = definition
+			if "count" in drop:
+				drop.count = quantity
+		
+		# Add to scene
+		if main:
+			main.add_child(drop)
+		else:
+			get_tree().current_scene.add_child(drop)
+		
+		return {
+			"success": true,
+			"item": item_id,
+			"quantity": quantity,
+			"position": {"x": spawn_pos.x, "y": spawn_pos.y},
+			"method": "resource_drop",
+		}
+	
+	# Method 2: Try direct inventory add as fallback
+	var player := _find_player()
+	if player:
+		var add_result := _add_item({"item": item_id, "quantity": quantity})
+		if add_result.get("success", false):
+			add_result["method"] = "inventory_fallback"
+			add_result["note"] = "Item added to inventory (no world drop system)"
+			return add_result
+	
+	return {"error": {"code": -32603, "message": "No item spawning system available"}}
 
 
 # =============================================================================
