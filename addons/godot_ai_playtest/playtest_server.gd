@@ -444,6 +444,13 @@ func _find_player() -> Node:
 
 
 func _get_player_info(player: Node) -> Dictionary:
+	# Prefer playtest hook if available
+	if player.has_method("_playtest_get_state"):
+		var state: Dictionary = player._playtest_get_state()
+		state["exists"] = true
+		return state
+	
+	# Fallback to generic property inspection
 	var info := {
 		"exists": true,
 		"name": player.name,
@@ -514,6 +521,14 @@ func _get_npcs_info() -> Array:
 
 
 func _get_npc_info(npc: Node) -> Dictionary:
+	# Prefer playtest hook if available
+	if npc.has_method("_playtest_get_state"):
+		var state: Dictionary = npc._playtest_get_state()
+		state["_node_id"] = npc.get_instance_id()
+		state["_node_path"] = str(npc.get_path())
+		return state
+	
+	# Fallback to generic property inspection
 	var info := {
 		"name": npc.name,
 		"_node_id": npc.get_instance_id(),
@@ -993,9 +1008,15 @@ func _remove_item(params: Dictionary) -> Dictionary:
 func _save_game(params: Dictionary) -> Dictionary:
 	var slot: String = params.get("slot", "playtest_save")
 	
-	# Try SaveManager
 	var save_mgr := get_node_or_null("/root/SaveManager")
 	if save_mgr:
+		# Prefer playtest hook
+		if save_mgr.has_method("_playtest_save"):
+			return save_mgr._playtest_save(slot)
+		# Fallback to standard methods
+		if save_mgr.has_method("save_to_slot"):
+			save_mgr.save_to_slot(slot)
+			return {"success": true, "slot": slot}
 		if save_mgr.has_method("save_game"):
 			var result = save_mgr.save_game(slot)
 			return {"success": true, "slot": slot, "result": str(result)}
@@ -1017,6 +1038,13 @@ func _load_game(params: Dictionary) -> Dictionary:
 	
 	var save_mgr := get_node_or_null("/root/SaveManager")
 	if save_mgr:
+		# Prefer playtest hook
+		if save_mgr.has_method("_playtest_load"):
+			return save_mgr._playtest_load(slot)
+		# Fallback to standard methods
+		if save_mgr.has_method("load_from_slot"):
+			var result = save_mgr.load_from_slot(slot)
+			return {"success": not result.is_empty(), "slot": slot}
 		if save_mgr.has_method("load_game"):
 			var result = save_mgr.load_game(slot)
 			return {"success": true, "slot": slot, "result": str(result)}
@@ -1033,6 +1061,17 @@ func _load_game(params: Dictionary) -> Dictionary:
 
 
 func _list_saves(params: Dictionary) -> Dictionary:
+	var save_mgr := get_node_or_null("/root/SaveManager")
+	if save_mgr:
+		# Prefer playtest hook
+		if save_mgr.has_method("_playtest_list_saves"):
+			return save_mgr._playtest_list_saves()
+		# Fallback to list_all_slots
+		if save_mgr.has_method("list_all_slots"):
+			var slots = save_mgr.list_all_slots()
+			return {"saves": slots, "count": slots.size()}
+	
+	# Generic fallback: scan directory
 	var saves := []
 	var save_dir := "user://saves"
 	
@@ -1058,6 +1097,17 @@ func _delete_save(params: Dictionary) -> Dictionary:
 	if slot.is_empty():
 		return {"error": {"code": -32602, "message": "Missing 'slot' parameter"}}
 	
+	var save_mgr := get_node_or_null("/root/SaveManager")
+	if save_mgr:
+		# Prefer playtest hook
+		if save_mgr.has_method("_playtest_delete_save"):
+			return save_mgr._playtest_delete_save(slot)
+		# Fallback to delete_slot
+		if save_mgr.has_method("delete_slot"):
+			save_mgr.delete_slot(slot)
+			return {"success": true, "slot": slot}
+	
+	# Generic fallback: delete files
 	var save_dir := "user://saves"
 	var deleted := false
 	
