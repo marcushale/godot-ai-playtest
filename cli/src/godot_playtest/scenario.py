@@ -192,7 +192,21 @@ class ScenarioRunner:
                 elif isinstance(input_def, str):
                     await self._client.send_input(input_def)
             
-            # Wait
+            # Call method on node
+            if "call_method" in step:
+                cm = step["call_method"]
+                await self._client.call_method(
+                    cm.get("node", ""),
+                    cm.get("method", ""),
+                    cm.get("args", []),
+                )
+            
+            # Scene change
+            if "scene_change" in step:
+                sc = step["scene_change"]
+                await self._client.scene_change(sc.get("scene", ""))
+            
+            # Wait (after actions, before assertions)
             if "wait" in step:
                 wait_def = step["wait"]
                 if isinstance(wait_def, dict):
@@ -207,11 +221,19 @@ class ScenarioRunner:
                         await self._client.wait_ms(wait_def["timeout_ms"])
             
             if "wait_ms" in step:
-                await self._client.wait_ms(step["wait_ms"])
+                import asyncio
+                await asyncio.sleep(step["wait_ms"] / 1000.0)
             
             # Assertions
             if "assert" in step:
                 current_state = await self._client.get_state()
+                # Debug: print player state
+                if "player" in current_state:
+                    pos = current_state.get('player', {}).get('position', {})
+                    prev_pos = self._previous_state.get('player', {}).get('position', {}) if self._previous_state else {}
+                    print(f"  [DEBUG] current pos: ({pos.get('x')}, {pos.get('y')}), prev pos: ({prev_pos.get('x')}, {prev_pos.get('y')})")
+                else:
+                    print(f"  [DEBUG] No player in state. State keys: {list(current_state.keys())}")
                 for assertion in step["assert"]:
                     if not self._evaluate_assertion(assertion, current_state):
                         raise AssertionError(f"Assertion failed: {assertion}")
@@ -255,6 +277,12 @@ class ScenarioRunner:
             left_val = self._get_value(left.strip(), state)
             right_val = self._get_value(right.strip(), state) if "$" in right else float(right.strip())
             return left_val > right_val
+        
+        if " < " in assertion:
+            left, right = assertion.split(" < ", 1)
+            left_val = self._get_value(left.strip(), state)
+            right_val = self._get_value(right.strip(), state) if "$" in right else float(right.strip())
+            return left_val < right_val
         
         if " contains " in assertion:
             left, right = assertion.split(" contains ", 1)

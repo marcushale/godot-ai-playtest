@@ -1,24 +1,21 @@
 extends Node
-## PlaytestServer - TCP/JSON-RPC server for AI-assisted playtesting
+## PlaytestServer - TCP/JSON-RPC server for AI-assisted playtesting (simplified)
 ##
 ## Exposes game state and controls to external tools. Only active in debug builds.
 ## Connect via TCP on localhost:9876 (configurable).
 
 const VERSION := "0.1.0"
 const DEFAULT_PORT := 9876
-const MAX_CLIENTS := 4
 const BUFFER_SIZE := 65536
 
 # Configuration
 var port: int = DEFAULT_PORT
 var enabled: bool = true
-var allow_execute: bool = true  # Set false in CI for security
 
 # Server state
 var _server: TCPServer
 var _clients: Array[StreamPeerTCP] = []
 var _client_buffers: Dictionary = {}  # client -> String buffer
-var _event_subscribers: Dictionary = {}  # client -> Array of event types
 
 # Signals for game integration
 signal client_connected(client_id: int)
@@ -124,12 +121,12 @@ func _handle_message(client: StreamPeerTCP, message: String) -> void:
 	
 	var method: String = request.method
 	var params: Dictionary = request.get("params", {})
-	var id = request.get("id")  # Can be null for notifications
+	var id: Variant = request.get("id")  # Can be null for notifications
 	
 	command_received.emit(method, params)
 	
 	# Route to handler
-	var result = _handle_method(client, method, params)
+	var result: Variant = _handle_method(method, params)
 	
 	if id != null:
 		if result is Dictionary and result.has("error"):
@@ -138,7 +135,7 @@ func _handle_message(client: StreamPeerTCP, message: String) -> void:
 			_send_result(client, id, result)
 
 
-func _handle_method(client: StreamPeerTCP, method: String, params: Dictionary) -> Variant:
+func _handle_method(method: String, params: Dictionary) -> Variant:
 	match method:
 		"ping":
 			return {"pong": true, "version": VERSION}
@@ -152,19 +149,14 @@ func _handle_method(client: StreamPeerTCP, method: String, params: Dictionary) -
 		"screenshot":
 			return _screenshot(params)
 		
+		"scene_change":
+			return _scene_change(params)
+		
+		"call_method":
+			return _call_method(params)
+		
 		"query":
 			return _query(params)
-		
-		"wait":
-			return _wait(params)
-		
-		"events":
-			return _events(client, params)
-		
-		"execute":
-			if not allow_execute:
-				return {"error": {"code": -32601, "message": "execute disabled in this mode"}}
-			return _execute(params)
 		
 		_:
 			return {"error": {"code": -32601, "message": "Method not found: " + method}}
@@ -174,8 +166,8 @@ func _handle_method(client: StreamPeerTCP, method: String, params: Dictionary) -
 # RPC Methods
 # =============================================================================
 
-func _get_state(params: Dictionary) -> Dictionary:
-	var state := {
+func _get_state(_params: Dictionary) -> Dictionary:
+	var state: Dictionary = {
 		"timestamp_ms": Time.get_ticks_msec(),
 		"version": VERSION,
 	}
@@ -193,10 +185,8 @@ func _get_state(params: Dictionary) -> Dictionary:
 	if player:
 		state["player"] = _serialize_player(player)
 	
-	# Find world/game manager
-	var world_state := _get_world_state()
-	if not world_state.is_empty():
-		state["world"] = world_state
+	# World state from custom hooks
+	state["world"] = _get_world_state()
 	
 	# NPCs
 	var npcs := _get_npcs()
@@ -221,9 +211,6 @@ func _get_state(params: Dictionary) -> Dictionary:
 
 
 func _send_input(params: Dictionary) -> Dictionary:
-	if params.has("sequence"):
-		return _send_input_sequence(params.sequence)
-	
 	var action: String = params.get("action", "")
 	if action.is_empty():
 		return {"error": {"code": -32602, "message": "Missing 'action' parameter"}}
@@ -231,72 +218,47 @@ func _send_input(params: Dictionary) -> Dictionary:
 	if not InputMap.has_action(action):
 		return {"error": {"code": -32602, "message": "Unknown action: " + action}}
 	
-	var duration_ms: int = params.get("duration_ms", 0)
-	var press: bool = params.get("press", true)
-	var release: bool = params.get("release", true)
+	var duration_ms: int = params.get("duration_ms", 100)  # Default 100ms hold
 	
+	# Press the action
+	Input.action_press(action)
+	
+	# Schedule release after duration
 	if duration_ms > 0:
-		# Press, wait, release
-		Input.action_press(action)
-		await get_tree().create_timer(duration_ms / 1000.0).timeout
-		Input.action_release(action)
-	elif press and release:
-		# Tap
-		Input.action_press(action)
-		await get_tree().process_frame
-		Input.action_release(action)
-	elif press:
-		Input.action_press(action)
-	elif release:
-		Input.action_release(action)
+		get_tree().create_timer(duration_ms / 1000.0).timeout.connect(
+			func(): Input.action_release(action)
+		)
+	else:
+		call_deferred("_deferred_release_action", action)
 	
-	return {"success": true, "action": action, "executed_at": Time.get_ticks_msec()}
+	return {"success": true, "action": action, "duration_ms": duration_ms, "executed_at": Time.get_ticks_msec()}
 
 
-func _send_input_sequence(sequence: Array) -> Dictionary:
-	for item in sequence:
-		if item is Dictionary:
-			if item.has("action"):
-				await _send_input(item)
-			elif item.has("wait_ms"):
-				await get_tree().create_timer(item.wait_ms / 1000.0).timeout
-		elif item is String:
-			# Parse shorthand: "right:500" or "interact" or "wait:100"
-			var parts := item.split(":")
-			var action := parts[0]
-			
-			if action == "wait":
-				var ms := int(parts[1]) if parts.size() > 1 else 100
-				await get_tree().create_timer(ms / 1000.0).timeout
-			else:
-				var duration := int(parts[1]) if parts.size() > 1 else 0
-				await _send_input({"action": action, "duration_ms": duration})
-	
-	return {"success": true, "sequence_length": sequence.size()}
+func _deferred_release_action(action: String) -> void:
+	Input.action_release(action)
 
 
 func _screenshot(params: Dictionary) -> Dictionary:
-	var include_ui: bool = params.get("include_ui", true)
 	var scale: float = params.get("scale", 1.0)
 	var format: String = params.get("format", "png")
 	
-	# Wait for frame to render
-	await RenderingServer.frame_post_draw
-	
+	# Capture viewport
 	var viewport := get_viewport()
 	var img := viewport.get_texture().get_image()
 	
 	if scale != 1.0:
-		var new_size := Vector2i(img.get_width() * scale, img.get_height() * scale)
+		var new_size := Vector2i(int(img.get_width() * scale), int(img.get_height() * scale))
 		img.resize(new_size.x, new_size.y)
 	
-	# Save to temp file
+	# Save to user data dir
 	var timestamp := Time.get_unix_time_from_system()
-	var filename := "playtest_%d.%s" % [timestamp, format]
-	var path := OS.get_user_data_dir() + "/screenshots/" + filename
+	var filename := "playtest_%d.%s" % [int(timestamp), format]
+	var screenshots_dir := OS.get_user_data_dir() + "/screenshots"
 	
 	# Ensure directory exists
-	DirAccess.make_dir_recursive_absolute(OS.get_user_data_dir() + "/screenshots")
+	DirAccess.make_dir_recursive_absolute(screenshots_dir)
+	
+	var path := screenshots_dir + "/" + filename
 	
 	var err: int
 	match format:
@@ -318,6 +280,43 @@ func _screenshot(params: Dictionary) -> Dictionary:
 	}
 
 
+func _scene_change(params: Dictionary) -> Dictionary:
+	var scene_path: String = params.get("scene", "")
+	if scene_path.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'scene' parameter"}}
+	
+	if not ResourceLoader.exists(scene_path):
+		return {"error": {"code": -32602, "message": "Scene not found: " + scene_path}}
+	
+	var err := get_tree().change_scene_to_file(scene_path)
+	if err != OK:
+		return {"error": {"code": -32603, "message": "Failed to change scene: " + error_string(err)}}
+	
+	return {"success": true, "scene": scene_path}
+
+
+func _call_method(params: Dictionary) -> Dictionary:
+	var node_path: String = params.get("node", "")
+	var method_name: String = params.get("method", "")
+	var args: Array = params.get("args", [])
+	
+	if node_path.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'node' parameter"}}
+	if method_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'method' parameter"}}
+	
+	var node := get_node_or_null(node_path)
+	if node == null:
+		return {"error": {"code": -32602, "message": "Node not found: " + node_path}}
+	
+	if not node.has_method(method_name):
+		return {"error": {"code": -32602, "message": "Method not found: " + method_name}}
+	
+	var result: Variant = node.callv(method_name, args)
+	
+	return {"success": true, "result": result}
+
+
 func _query(params: Dictionary) -> Dictionary:
 	var query_type: String = params.get("type", "")
 	
@@ -337,99 +336,18 @@ func _query(params: Dictionary) -> Dictionary:
 			return {"error": {"code": -32602, "message": "Unknown query type: " + query_type}}
 
 
-func _wait(params: Dictionary) -> Dictionary:
-	var timeout_ms: int = params.get("timeout_ms", 5000)
-	var condition: String = params.get("condition", "")
-	var signal_name: String = params.get("signal", "")
-	
-	var start := Time.get_ticks_msec()
-	
-	if not signal_name.is_empty():
-		# Wait for signal - simplified, would need proper signal lookup
-		return {"error": {"code": -32603, "message": "Signal waiting not yet implemented"}}
-	
-	if not condition.is_empty():
-		# Poll condition
-		while Time.get_ticks_msec() - start < timeout_ms:
-			if _evaluate_condition(condition):
-				return {"satisfied": true, "waited_ms": Time.get_ticks_msec() - start}
-			await get_tree().create_timer(0.05).timeout
-		
-		return {"satisfied": false, "waited_ms": timeout_ms, "timeout": true}
-	
-	# Just wait
-	await get_tree().create_timer(timeout_ms / 1000.0).timeout
-	return {"waited_ms": timeout_ms}
-
-
-func _events(client: StreamPeerTCP, params: Dictionary) -> Dictionary:
-	var subscribe: Array = params.get("subscribe", [])
-	var unsubscribe: Array = params.get("unsubscribe", [])
-	
-	if not _event_subscribers.has(client):
-		_event_subscribers[client] = []
-	
-	for event_type in subscribe:
-		if event_type not in _event_subscribers[client]:
-			_event_subscribers[client].append(event_type)
-	
-	for event_type in unsubscribe:
-		_event_subscribers[client].erase(event_type)
-	
-	return {"subscribed": _event_subscribers[client]}
-
-
-func _execute(params: Dictionary) -> Dictionary:
-	var expression_str: String = params.get("expression", "")
-	if expression_str.is_empty():
-		return {"error": {"code": -32602, "message": "Missing 'expression' parameter"}}
-	
-	var expression := Expression.new()
-	var err := expression.parse(expression_str)
-	
-	if err != OK:
-		return {"error": {"code": -32602, "message": "Parse error: " + expression.get_error_text()}}
-	
-	var result = expression.execute([], get_tree().current_scene)
-	
-	if expression.has_execute_failed():
-		return {"error": {"code": -32603, "message": "Execution failed"}}
-	
-	return {"success": true, "return_value": result}
-
-
-# =============================================================================
-# Event Emission (call from game code)
-# =============================================================================
-
-func emit_event(event_type: String, data: Dictionary = {}) -> void:
-	var notification := {
-		"jsonrpc": "2.0",
-		"method": "event",
-		"params": {
-			"type": event_type,
-			"data": data,
-			"timestamp_ms": Time.get_ticks_msec(),
-		}
-	}
-	
-	var json_str := JSON.stringify(notification) + "\n"
-	var bytes := json_str.to_utf8_buffer()
-	
-	for client in _event_subscribers:
-		if client.get_status() != StreamPeerTCP.STATUS_CONNECTED:
-			continue
-		if event_type in _event_subscribers[client] or "*" in _event_subscribers[client]:
-			client.put_data(bytes)
-
-
 # =============================================================================
 # Helpers - Game State
 # =============================================================================
 
 func _find_player() -> Node:
+	# Try finding by group (LOOP uses this)
+	var players := get_tree().get_nodes_in_group("player")
+	if not players.is_empty():
+		return players[0]
+	
 	# Try common patterns
-	var patterns := [
+	var patterns: Array[String] = [
 		"/root/Main/Player",
 		"/root/Game/Player", 
 		"/root/World/Player",
@@ -440,21 +358,11 @@ func _find_player() -> Node:
 		if node:
 			return node
 	
-	# Try finding by group
-	var players := get_tree().get_nodes_in_group("player")
-	if not players.is_empty():
-		return players[0]
-	
-	# Try finding by class name pattern
-	for node in get_tree().current_scene.get_children():
-		if "player" in node.name.to_lower():
-			return node
-	
 	return null
 
 
 func _serialize_player(player: Node) -> Dictionary:
-	var data := {
+	var data: Dictionary = {
 		"exists": true,
 		"name": player.name,
 	}
@@ -465,80 +373,37 @@ func _serialize_player(player: Node) -> Dictionary:
 	elif player is Node3D:
 		data["position"] = {"x": player.global_position.x, "y": player.global_position.y, "z": player.global_position.z}
 	
-	# Common properties via duck typing
-	if player.has_method("get_tile_position"):
-		var tile_pos = player.get_tile_position()
-		data["tile_position"] = {"x": tile_pos.x, "y": tile_pos.y}
-	
-	if player.has_method("get_state") or "state" in player:
-		data["state"] = player.get("state") if "state" in player else player.get_state()
-	
-	if player.has_method("get_facing") or "facing" in player:
-		data["facing"] = player.get("facing") if "facing" in player else player.get_facing()
-	
-	# Inventory
-	if player.has_method("_playtest_get_inventory"):
-		data["inventory"] = player._playtest_get_inventory()
-	elif "inventory" in player:
-		data["inventory"] = _serialize_inventory(player.inventory)
-	
-	# Stats
-	if player.has_method("_playtest_get_stats"):
-		data["stats"] = player._playtest_get_stats()
-	
-	# Custom playtest data
+	# Custom playtest data (LOOP implements _playtest_get_state)
 	if player.has_method("_playtest_get_state"):
 		data.merge(player._playtest_get_state())
 	
 	return data
 
 
-func _serialize_inventory(inventory) -> Dictionary:
-	# Generic inventory serialization - override with _playtest_get_inventory for custom
-	if inventory == null:
-		return {}
-	
-	if inventory is Array:
-		return {"items": inventory}
-	
-	if inventory is Dictionary:
-		return inventory
-	
-	# Try common inventory patterns
-	var data := {}
-	if "items" in inventory:
-		data["items"] = inventory.items
-	if "slots" in inventory:
-		data["slots"] = inventory.slots
-	
-	return data
-
-
 func _get_world_state() -> Dictionary:
-	var state := {}
+	var state: Dictionary = {}
 	
-	# Try to find common world/game managers
-	var managers := ["GameManager", "WorldManager", "TimeManager", "Main"]
+	# Check GameManager
+	if has_node("/root/GameManager"):
+		var gm := get_node("/root/GameManager")
+		if gm.has_method("_playtest_get_state"):
+			state.merge(gm._playtest_get_state())
 	
-	for manager_name in managers:
-		var manager := get_node_or_null("/root/" + manager_name)
-		if manager and manager.has_method("_playtest_get_state"):
-			state.merge(manager._playtest_get_state())
+	# Check TimeManager
+	if has_node("/root/TimeManager"):
+		var tm := get_node("/root/TimeManager")
+		if tm.has_method("_playtest_get_state"):
+			state.merge(tm._playtest_get_state())
 	
 	return state
 
 
 func _get_npcs() -> Array:
-	var npcs := []
+	var npcs: Array = []
 	
 	# Find by group
 	for npc in get_tree().get_nodes_in_group("npc"):
 		npcs.append(_serialize_npc(npc))
-	
-	# Also check "npcs" and "colonists" groups
-	for npc in get_tree().get_nodes_in_group("npcs"):
-		if not _contains_node(npcs, npc):
-			npcs.append(_serialize_npc(npc))
 	
 	for npc in get_tree().get_nodes_in_group("colonists"):
 		if not _contains_node(npcs, npc):
@@ -555,18 +420,13 @@ func _contains_node(arr: Array, node: Node) -> bool:
 
 
 func _serialize_npc(npc: Node) -> Dictionary:
-	var data := {
+	var data: Dictionary = {
 		"_node_id": npc.get_instance_id(),
 		"name": npc.name,
 	}
 	
 	if npc is Node2D:
 		data["position"] = {"x": npc.global_position.x, "y": npc.global_position.y}
-	
-	# Common NPC properties
-	for prop in ["id", "display_name", "current_activity", "mood", "state"]:
-		if prop in npc:
-			data[prop] = npc.get(prop)
 	
 	# Custom
 	if npc.has_method("_playtest_get_state"):
@@ -576,9 +436,8 @@ func _serialize_npc(npc: Node) -> Dictionary:
 
 
 func _get_ui_state() -> Dictionary:
-	var state := {
-		"open_panels": [],
-		"dialogue_active": false,
+	var state: Dictionary = {
+		"open_panels": [] as Array[String],
 	}
 	
 	# Check for common UI patterns
@@ -591,28 +450,21 @@ func _get_ui_state() -> Dictionary:
 			if child is Control and child.visible:
 				state["open_panels"].append(child.name)
 	
-	# Check for dialogue system
-	var dialogue_managers := ["DialogueManager", "DialogueSystem", "DialogueUI"]
-	for dm_name in dialogue_managers:
-		var dm := get_node_or_null("/root/" + dm_name)
-		if dm and "active" in dm:
-			state["dialogue_active"] = dm.active
-			break
-	
 	return state
 
 
 func _collect_custom_state() -> Dictionary:
-	var custom := {}
+	var custom: Dictionary = {}
 	
 	# Find all nodes that implement _playtest_get_state
-	_collect_custom_recursive(get_tree().current_scene, custom)
+	if get_tree().current_scene:
+		_collect_custom_recursive(get_tree().current_scene, custom)
 	
 	return custom
 
 
 func _collect_custom_recursive(node: Node, custom: Dictionary) -> void:
-	if node.has_method("_playtest_get_state"):
+	if node.has_method("_playtest_get_state") and node != self:
 		var key := node.get_path().get_concatenated_names().replace("/", "_")
 		custom[key] = node._playtest_get_state()
 	
@@ -625,7 +477,7 @@ func _collect_custom_recursive(node: Node, custom: Dictionary) -> void:
 # =============================================================================
 
 func _query_entity(filter: Dictionary) -> Dictionary:
-	var id = filter.get("id")
+	var id: Variant = filter.get("id")
 	var name_filter: String = filter.get("name", "")
 	
 	# Search by id
@@ -635,7 +487,7 @@ func _query_entity(filter: Dictionary) -> Dictionary:
 			return _serialize_any_node(node)
 	
 	# Search by name
-	if not name_filter.is_empty():
+	if not name_filter.is_empty() and get_tree().current_scene:
 		var node := _find_node_by_name(get_tree().current_scene, name_filter)
 		if node:
 			return _serialize_any_node(node)
@@ -656,16 +508,17 @@ func _find_node_by_name(root: Node, search_name: String) -> Node:
 
 
 func _query_entities_near(position: Vector2, radius: float) -> Dictionary:
-	var entities := []
+	var entities: Array = []
 	
-	_find_entities_near_recursive(get_tree().current_scene, position, radius, entities)
+	if get_tree().current_scene:
+		_find_entities_near_recursive(get_tree().current_scene, position, radius, entities)
 	
 	return {"entities": entities, "count": entities.size()}
 
 
 func _find_entities_near_recursive(node: Node, position: Vector2, radius: float, results: Array) -> void:
 	if node is Node2D:
-		var dist := node.global_position.distance_to(position)
+		var dist: float = node.global_position.distance_to(position)
 		if dist <= radius:
 			results.append({
 				"name": node.name,
@@ -682,23 +535,24 @@ func _query_tile(position: Vector2i) -> Dictionary:
 	var tilemaps := get_tree().get_nodes_in_group("tilemap")
 	if tilemaps.is_empty():
 		# Try to find any TileMap
-		tilemaps = _find_nodes_of_type(get_tree().current_scene, "TileMap")
+		if get_tree().current_scene:
+			tilemaps = _find_nodes_of_type(get_tree().current_scene, "TileMapLayer")
 	
 	if tilemaps.is_empty():
 		return {"error": {"code": -32602, "message": "No TileMap found"}}
 	
-	var tilemap: TileMap = tilemaps[0]
-	var data := tilemap.get_cell_tile_data(0, position)
+	var tilemap: TileMapLayer = tilemaps[0]
+	var data := tilemap.get_cell_tile_data(position)
 	
 	if data == null:
 		return {"position": {"x": position.x, "y": position.y}, "empty": true}
 	
 	return {
 		"position": {"x": position.x, "y": position.y},
-		"source_id": tilemap.get_cell_source_id(0, position),
+		"source_id": tilemap.get_cell_source_id(position),
 		"atlas_coords": {
-			"x": tilemap.get_cell_atlas_coords(0, position).x,
-			"y": tilemap.get_cell_atlas_coords(0, position).y,
+			"x": tilemap.get_cell_atlas_coords(position).x,
+			"y": tilemap.get_cell_atlas_coords(position).y,
 		},
 	}
 
@@ -712,7 +566,7 @@ func _query_node(path: String) -> Dictionary:
 
 
 func _serialize_any_node(node: Node) -> Dictionary:
-	var data := {
+	var data: Dictionary = {
 		"name": node.name,
 		"class": node.get_class(),
 		"path": str(node.get_path()),
@@ -736,7 +590,7 @@ func _serialize_any_node(node: Node) -> Dictionary:
 
 
 func _find_nodes_of_type(root: Node, type_name: String) -> Array:
-	var results := []
+	var results: Array = []
 	_find_nodes_of_type_recursive(root, type_name, results)
 	return results
 
@@ -749,31 +603,12 @@ func _find_nodes_of_type_recursive(node: Node, type_name: String, results: Array
 		_find_nodes_of_type_recursive(child, type_name, results)
 
 
-func _evaluate_condition(condition: String) -> bool:
-	# Simple condition evaluator for common patterns
-	# Format: "player.state == 'idle'" or "player.position.x > 10"
-	
-	var state := _get_state({})
-	
-	# Very basic - would need proper expression parser for complex conditions
-	if "player.state ==" in condition:
-		var expected := condition.split("==")[1].strip_edges().trim_prefix("'").trim_suffix("'").trim_prefix('"').trim_suffix('"')
-		return state.get("player", {}).get("state") == expected
-	
-	if "player.position.x >" in condition:
-		var threshold := float(condition.split(">")[1].strip_edges())
-		return state.get("player", {}).get("position", {}).get("x", 0) > threshold
-	
-	# Add more patterns as needed
-	return false
-
-
 # =============================================================================
 # Response Helpers
 # =============================================================================
 
-func _send_result(client: StreamPeerTCP, id, result: Variant) -> void:
-	var response := {
+func _send_result(client: StreamPeerTCP, id: Variant, result: Variant) -> void:
+	var response: Dictionary = {
 		"jsonrpc": "2.0",
 		"id": id,
 		"result": result,
@@ -781,8 +616,8 @@ func _send_result(client: StreamPeerTCP, id, result: Variant) -> void:
 	_send_json(client, response)
 
 
-func _send_error(client: StreamPeerTCP, id, code: int, message: String) -> void:
-	var response := {
+func _send_error(client: StreamPeerTCP, id: Variant, code: int, message: String) -> void:
+	var response: Dictionary = {
 		"jsonrpc": "2.0",
 		"id": id,
 		"error": {
@@ -802,7 +637,6 @@ func _remove_client(client: StreamPeerTCP) -> void:
 	var client_id := client.get_instance_id()
 	_clients.erase(client)
 	_client_buffers.erase(client)
-	_event_subscribers.erase(client)
 	print("[PlaytestServer] Client disconnected: %d" % client_id)
 	client_disconnected.emit(client_id)
 

@@ -248,6 +248,33 @@ class PlaytestClient:
         Warning: This is potentially dangerous and may be disabled on the server.
         """
         return await self._call("execute", {"expression": expression})
+    
+    async def call_method(
+        self,
+        node: str,
+        method: str,
+        args: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        """Call a method on a node.
+        
+        Args:
+            node: Node path (e.g., "/root/TitleScreen")
+            method: Method name to call
+            args: Arguments to pass to the method
+        """
+        return await self._call("call_method", {
+            "node": node,
+            "method": method,
+            "args": args or [],
+        })
+    
+    async def scene_change(self, scene: str) -> dict[str, Any]:
+        """Change to a different scene.
+        
+        Args:
+            scene: Scene path (e.g., "res://scenes/main/main.tscn")
+        """
+        return await self._call("scene_change", {"scene": scene})
 
 
 class PlaytestError(Exception):
