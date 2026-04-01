@@ -8,7 +8,7 @@ from typing import Any
 
 import click
 from rich.console import Console
-from rich.json import JSON as RichJSON
+from rich.json import JSON as RichJSON  # noqa: N811
 from rich.table import Table
 
 from .client import PlaytestClient, PlaytestError
@@ -37,18 +37,23 @@ def main(ctx: click.Context, host: str, port: int) -> None:
 @click.pass_context
 def ping(ctx: click.Context) -> None:
     """Check connection to PlaytestServer."""
+
     async def _ping() -> None:
         try:
             async with PlaytestClient(ctx.obj["host"], ctx.obj["port"]) as client:
                 result = await client.ping()
-                console.print(f"[green]✓ Connected[/green] - Server version: {result.get('version')}")
+                console.print(
+                    f"[green]✓ Connected[/green] - Server version: {result.get('version')}"
+                )
         except ConnectionRefusedError:
-            console.print("[red]✗ Connection refused[/red] - Is the game running with PlaytestServer?")
+            console.print(
+                "[red]✗ Connection refused[/red] - Is the game running with PlaytestServer?"
+            )
             sys.exit(1)
         except Exception as e:
             console.print(f"[red]✗ Error:[/red] {e}")
             sys.exit(1)
-    
+
     run_async(_ping())
 
 
@@ -58,11 +63,12 @@ def ping(ctx: click.Context) -> None:
 @click.pass_context
 def state(ctx: click.Context, as_json: bool, compact: bool) -> None:
     """Get current game state."""
+
     async def _state() -> None:
         try:
             async with PlaytestClient(ctx.obj["host"], ctx.obj["port"]) as client:
                 result = await client.get_state()
-                
+
                 if as_json:
                     if compact:
                         print(json.dumps(result, separators=(",", ":")))
@@ -70,14 +76,14 @@ def state(ctx: click.Context, as_json: bool, compact: bool) -> None:
                         print(json.dumps(result, indent=2))
                 else:
                     console.print(RichJSON(json.dumps(result)))
-        
+
         except ConnectionRefusedError:
             console.print("[red]✗ Connection refused[/red]")
             sys.exit(1)
         except PlaytestError as e:
             console.print(f"[red]✗ Error:[/red] {e}")
             sys.exit(1)
-    
+
     run_async(_state())
 
 
@@ -89,21 +95,22 @@ def state(ctx: click.Context, as_json: bool, compact: bool) -> None:
 @click.pass_context
 def input(ctx: click.Context, action: str, duration: int, press: bool, release: bool) -> None:
     """Send player input."""
+
     async def _input() -> None:
         try:
             async with PlaytestClient(ctx.obj["host"], ctx.obj["port"]) as client:
-                result = await client.send_input(action, duration, press, release)
+                await client.send_input(action, duration, press, release)
                 console.print(f"[green]✓ Input sent:[/green] {action}")
                 if duration > 0:
                     console.print(f"  Duration: {duration}ms")
-        
+
         except ConnectionRefusedError:
             console.print("[red]✗ Connection refused[/red]")
             sys.exit(1)
         except PlaytestError as e:
             console.print(f"[red]✗ Error:[/red] {e}")
             sys.exit(1)
-    
+
     run_async(_input())
 
 
@@ -112,22 +119,23 @@ def input(ctx: click.Context, action: str, duration: int, press: bool, release: 
 @click.pass_context
 def sequence(ctx: click.Context, sequence: str) -> None:
     """Send input sequence (e.g., "right:500, wait:100, interact")."""
+
     async def _sequence() -> None:
         try:
             # Parse sequence string
             parts = [p.strip() for p in sequence.split(",")]
-            
+
             async with PlaytestClient(ctx.obj["host"], ctx.obj["port"]) as client:
-                result = await client.send_sequence(parts)
+                await client.send_sequence(parts)
                 console.print(f"[green]✓ Sequence executed:[/green] {len(parts)} actions")
-        
+
         except ConnectionRefusedError:
             console.print("[red]✗ Connection refused[/red]")
             sys.exit(1)
         except PlaytestError as e:
             console.print(f"[red]✗ Error:[/red] {e}")
             sys.exit(1)
-    
+
     run_async(_sequence())
 
 
@@ -138,31 +146,33 @@ def sequence(ctx: click.Context, sequence: str) -> None:
 @click.pass_context
 def screenshot(ctx: click.Context, output: str | None, scale: float, fmt: str) -> None:
     """Capture a screenshot."""
+
     async def _screenshot() -> None:
         try:
             async with PlaytestClient(ctx.obj["host"], ctx.obj["port"]) as client:
                 result = await client.screenshot(scale=scale, format=fmt)
-                
+
                 path = result.get("path", "")
                 width = result.get("width", 0)
                 height = result.get("height", 0)
-                
+
                 console.print(f"[green]✓ Screenshot captured:[/green] {width}x{height}")
                 console.print(f"  Path: {path}")
-                
+
                 # Copy to output if specified
                 if output:
                     import shutil
+
                     shutil.copy(path, output)
                     console.print(f"  Copied to: {output}")
-        
+
         except ConnectionRefusedError:
             console.print("[red]✗ Connection refused[/red]")
             sys.exit(1)
         except PlaytestError as e:
             console.print(f"[red]✗ Error:[/red] {e}")
             sys.exit(1)
-    
+
     run_async(_screenshot())
 
 
@@ -178,20 +188,21 @@ def query() -> None:
 @click.pass_context
 def query_entity(ctx: click.Context, name: str, as_json: bool) -> None:
     """Query entity by name."""
+
     async def _query() -> None:
         try:
             async with PlaytestClient(ctx.obj["host"], ctx.obj["port"]) as client:
                 result = await client.query_entity({"name": name})
-                
+
                 if as_json:
                     print(json.dumps(result, indent=2))
                 else:
                     console.print(RichJSON(json.dumps(result)))
-        
+
         except PlaytestError as e:
             console.print(f"[red]✗ Error:[/red] {e}")
             sys.exit(1)
-    
+
     run_async(_query())
 
 
@@ -201,25 +212,26 @@ def query_entity(ctx: click.Context, name: str, as_json: bool) -> None:
 @click.pass_context
 def query_tile(ctx: click.Context, position: str, as_json: bool) -> None:
     """Query tile at position (x,y)."""
+
     async def _query() -> None:
         try:
             x, y = map(int, position.split(","))
-            
+
             async with PlaytestClient(ctx.obj["host"], ctx.obj["port"]) as client:
                 result = await client.query_tile(x, y)
-                
+
                 if as_json:
                     print(json.dumps(result, indent=2))
                 else:
                     console.print(RichJSON(json.dumps(result)))
-        
+
         except ValueError:
             console.print("[red]✗ Invalid position format.[/red] Use: x,y")
             sys.exit(1)
         except PlaytestError as e:
             console.print(f"[red]✗ Error:[/red] {e}")
             sys.exit(1)
-    
+
     run_async(_query())
 
 
@@ -230,25 +242,28 @@ def query_tile(ctx: click.Context, position: str, as_json: bool) -> None:
 @click.pass_context
 def query_near(ctx: click.Context, position: str, radius: float, as_json: bool) -> None:
     """Query entities near position (x,y)."""
+
     async def _query() -> None:
         try:
             x, y = map(float, position.split(","))
-            
+
             async with PlaytestClient(ctx.obj["host"], ctx.obj["port"]) as client:
                 result = await client.query_entities_near(x, y, radius)
-                
+
                 if as_json:
                     print(json.dumps(result, indent=2))
                 else:
                     entities = result.get("entities", [])
-                    console.print(f"[green]Found {len(entities)} entities within {radius} units[/green]")
-                    
+                    console.print(
+                        f"[green]Found {len(entities)} entities within {radius} units[/green]"
+                    )
+
                     if entities:
                         table = Table()
                         table.add_column("Name")
                         table.add_column("Position")
                         table.add_column("Distance")
-                        
+
                         for e in entities:
                             pos = e.get("position", {})
                             table.add_row(
@@ -256,16 +271,16 @@ def query_near(ctx: click.Context, position: str, radius: float, as_json: bool) 
                                 f"({pos.get('x', 0):.1f}, {pos.get('y', 0):.1f})",
                                 f"{e.get('distance', 0):.2f}",
                             )
-                        
+
                         console.print(table)
-        
+
         except ValueError:
             console.print("[red]✗ Invalid position format.[/red] Use: x,y")
             sys.exit(1)
         except PlaytestError as e:
             console.print(f"[red]✗ Error:[/red] {e}")
             sys.exit(1)
-    
+
     run_async(_query())
 
 
@@ -276,32 +291,33 @@ def query_near(ctx: click.Context, position: str, radius: float, as_json: bool) 
 @click.pass_context
 def run(ctx: click.Context, scenario_path: str, report: str, output: str | None) -> None:
     """Run a test scenario."""
+
     async def _run() -> None:
         try:
             runner = ScenarioRunner(ctx.obj["host"], ctx.obj["port"])
             result = await runner.run_file(Path(scenario_path))
-            
+
             if report == "json":
                 report_str = json.dumps(result.to_dict(), indent=2)
             elif report == "junit":
                 report_str = result.to_junit()
             else:
                 report_str = result.to_text()
-            
+
             if output:
                 Path(output).write_text(report_str)
                 console.print(f"Report written to: {output}")
             else:
                 print(report_str)
-            
+
             # Exit with error if scenario failed
             if not result.success:
                 sys.exit(1)
-        
+
         except Exception as e:
             console.print(f"[red]✗ Error:[/red] {e}")
             sys.exit(1)
-    
+
     run_async(_run())
 
 
@@ -310,30 +326,31 @@ def run(ctx: click.Context, scenario_path: str, report: str, output: str | None)
 @click.pass_context
 def events(ctx: click.Context, event_types: tuple[str, ...]) -> None:
     """Watch game events (Ctrl+C to stop)."""
+
     async def _events() -> None:
         try:
             async with PlaytestClient(ctx.obj["host"], ctx.obj["port"]) as client:
                 types = list(event_types) if event_types else ["*"]
                 await client.subscribe_events(types)
-                
+
                 console.print(f"[green]Watching events:[/green] {', '.join(types)}")
                 console.print("Press Ctrl+C to stop\n")
-                
+
                 def on_event(event_type: str, data: dict[str, Any]) -> None:
                     console.print(f"[yellow]{event_type}[/yellow]: {json.dumps(data)}")
-                
+
                 client.on_event(on_event)
-                
+
                 # Keep running until interrupted
                 while True:
                     await asyncio.sleep(0.1)
-        
+
         except KeyboardInterrupt:
             console.print("\n[dim]Stopped watching events[/dim]")
         except ConnectionRefusedError:
             console.print("[red]✗ Connection refused[/red]")
             sys.exit(1)
-    
+
     run_async(_events())
 
 
