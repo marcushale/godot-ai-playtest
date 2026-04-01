@@ -275,6 +275,86 @@ class PlaytestClient:
             scene: Scene path (e.g., "res://scenes/main/main.tscn")
         """
         return await self._call("scene_change", {"scene": scene})
+    
+    # =========================================================================
+    # Input - GodotTestDriver-inspired patterns
+    # =========================================================================
+    
+    async def hold_action(self, action: str, strength: float = 1.0) -> dict[str, Any]:
+        """Hold an input action indefinitely until release_action is called.
+        
+        Useful for continuous movement or held buttons.
+        
+        Args:
+            action: Input action name
+            strength: Action strength (0.0 - 1.0)
+        """
+        return await self._call("hold_action", {"action": action, "strength": strength})
+    
+    async def release_action(self, action: str) -> dict[str, Any]:
+        """Release a held input action.
+        
+        Args:
+            action: Input action name to release
+        """
+        return await self._call("release_action", {"action": action})
+    
+    async def click_at(
+        self,
+        x: float,
+        y: float,
+        button: int = 1,  # MOUSE_BUTTON_LEFT
+    ) -> dict[str, Any]:
+        """Click the mouse at a specific position.
+        
+        Args:
+            x: X coordinate in viewport space
+            y: Y coordinate in viewport space
+            button: Mouse button (1=left, 2=right, 3=middle)
+        """
+        return await self._call("click_at", {"x": x, "y": y, "button": button})
+    
+    async def move_mouse(self, x: float, y: float) -> dict[str, Any]:
+        """Move the mouse to a specific position.
+        
+        Args:
+            x: X coordinate in viewport space
+            y: Y coordinate in viewport space
+        """
+        return await self._call("move_mouse", {"x": x, "y": y})
+    
+    async def wait_for(
+        self,
+        condition: str,
+        timeout_ms: int = 5000,
+    ) -> dict[str, Any]:
+        """Wait for a condition to be true.
+        
+        The condition is evaluated against game state. Supports simple
+        comparisons like:
+        - "player.health > 50"
+        - "scene.name == 'Main'"
+        - "world.game_state == 'PLAYING'"
+        
+        Args:
+            condition: Condition string
+            timeout_ms: Maximum wait time in milliseconds
+            
+        Returns:
+            Dict with success, waited_ms, and condition_met fields
+        """
+        return await self._call("wait_for", {
+            "condition": condition,
+            "timeout_ms": timeout_ms,
+        })
+    
+    async def query_input_actions(self) -> dict[str, Any]:
+        """Get list of all available input actions.
+        
+        Returns:
+            Dict with 'actions' list
+        """
+        return await self._call("query", {"type": "input_actions"})
 
 
 class PlaytestError(Exception):
