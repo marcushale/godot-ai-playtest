@@ -290,6 +290,22 @@ func _handle_method(_client: StreamPeerTCP, method: String, params: Dictionary) 
 		"playback":
 			return _playback(params)
 		
+		# World/Tile Query
+		"get_tile":
+			return _get_tile(params)
+		"get_tiles_in_radius":
+			return _get_tiles_in_radius(params)
+		"get_entities_at":
+			return _get_entities_at(params)
+		
+		# NPC Interaction
+		"interact_npc":
+			return _interact_npc(params)
+		"give_gift":
+			return _give_gift(params)
+		"talk_to_npc":
+			return _talk_to_npc(params)
+		
 		_:
 			return {"error": {"code": -32601, "message": "Method not found: " + method}}
 
@@ -901,7 +917,51 @@ func _get_inventory(params: Dictionary) -> Dictionary:
 	
 	var inventory := {"items": [], "capacity": 0, "used": 0}
 	
-	# Try common inventory patterns
+	# Try getting inventory via Main scene (LOOP pattern)
+	var main := get_tree().current_scene
+	if main and main.has_method("get_player_inventory"):
+		var peer_id: int = 1
+		if player.has_method("get_network_peer_id"):
+			peer_id = player.get_network_peer_id()
+		var inv_mgr: Node = main.get_player_inventory(peer_id)
+		
+		if inv_mgr:
+			if inv_mgr.has_method("get_total_slot_count"):
+				inventory["capacity"] = inv_mgr.get_total_slot_count()
+			
+			if inv_mgr.has_method("get_hotbar_items"):
+				var hotbar_items = inv_mgr.get_hotbar_items()
+				for item_data in hotbar_items:
+					if item_data and item_data.get("id", &"") != &"":
+						inventory["items"].append({
+							"id": str(item_data.get("id", "")),
+							"name": item_data.get("display_name", str(item_data.get("id", "unknown"))),
+							"quantity": item_data.get("count", 1),
+							"slot_type": "hotbar",
+						})
+			
+			# Try to get main inventory items
+			if "main" in inv_mgr:
+				for slot in inv_mgr.main:
+					if slot and slot.item:
+						inventory["items"].append({
+							"id": str(slot.item.id),
+							"name": slot.item.display_name if "display_name" in slot.item else str(slot.item.id),
+							"quantity": slot.count,
+							"slot_type": "main",
+						})
+			
+			# Try get_material_counts for a summary
+			if inv_mgr.has_method("get_material_counts"):
+				var counts: Dictionary = inv_mgr.get_material_counts()
+				inventory["material_counts"] = {}
+				for mat_id in counts:
+					inventory["material_counts"][str(mat_id)] = counts[mat_id]
+			
+			inventory["used"] = inventory["items"].size()
+			return inventory
+	
+	# Fallback: Try common inventory patterns on player
 	var inv_node: Node = null
 	if "inventory" in player:
 		inv_node = player.inventory
@@ -919,14 +979,14 @@ func _get_inventory(params: Dictionary) -> Dictionary:
 			inventory["capacity"] = inv_node.slots.size() if inv_node.slots is Array else inv_node.slots
 	
 	# Try InventoryManager autoload
-	var inv_mgr := get_node_or_null("/root/InventoryManager")
-	if inv_mgr:
-		if inv_mgr.has_method("get_items"):
-			var items = inv_mgr.get_items()
+	var inv_mgr_global := get_node_or_null("/root/InventoryManager")
+	if inv_mgr_global:
+		if inv_mgr_global.has_method("get_items"):
+			var items = inv_mgr_global.get_items()
 			for item in items:
 				inventory["items"].append(_serialize_item(item))
-		if inv_mgr.has_method("get_capacity"):
-			inventory["capacity"] = inv_mgr.get_capacity()
+		if inv_mgr_global.has_method("get_capacity"):
+			inventory["capacity"] = inv_mgr_global.get_capacity()
 	
 	inventory["used"] = inventory["items"].size()
 	return inventory
@@ -960,43 +1020,111 @@ func _serialize_item(item: Variant) -> Dictionary:
 
 
 func _add_item(params: Dictionary) -> Dictionary:
-	var item_name: String = params.get("item", "")
+	var item_id: String = params.get("item", params.get("item_id", ""))
 	var quantity: int = params.get("quantity", 1)
 	
-	if item_name.is_empty():
+	if item_id.is_empty():
 		return {"error": {"code": -32602, "message": "Missing 'item' parameter"}}
 	
-	# Try InventoryManager
-	var inv_mgr := get_node_or_null("/root/InventoryManager")
-	if inv_mgr and inv_mgr.has_method("add_item"):
-		var result = inv_mgr.add_item(item_name, quantity)
-		return {"success": true, "item": item_name, "quantity": quantity, "result": str(result)}
+	# Normalize item_id to StringName format
+	var item_sn := StringName(item_id)
 	
-	# Try player inventory
+	# Get player inventory via Main scene
+	var main := get_tree().current_scene
 	var player := _find_player()
-	if player and "inventory" in player and player.inventory.has_method("add_item"):
-		var result = player.inventory.add_item(item_name, quantity)
-		return {"success": true, "item": item_name, "quantity": quantity, "result": str(result)}
+	var inventory: Node = null
 	
-	return {"error": {"code": -32603, "message": "No inventory system found"}}
+	if main and main.has_method("get_player_inventory") and player:
+		var peer_id: int = 1  # Single player default
+		if player.has_method("get_network_peer_id"):
+			peer_id = player.get_network_peer_id()
+		inventory = main.get_player_inventory(peer_id)
+	
+	if not inventory:
+		return {"error": {"code": -32603, "message": "No inventory system found"}}
+	
+	# Try to get definition from ContentLoader materials registry
+	var content_loader := get_node_or_null("/root/ContentLoader")
+	var definition: Resource = null
+	
+	if content_loader:
+		var materials: Dictionary = content_loader.get_registry(&"materials")
+		if materials.has(item_id) or materials.has(item_sn):
+			# Create ResourceDefinition from material data
+			var mat_data: Dictionary = materials.get(item_id, materials.get(item_sn, {}))
+			var ResourceDef = load("res://scripts/resources/resource_definition.gd")
+			definition = ResourceDef.new()
+			definition.id = item_sn
+			definition.display_name = mat_data.get("display_name", item_id.replace("_", " ").capitalize())
+			definition.stack_size = mat_data.get("stack_size", 999)
+			definition.discovered = true
+	
+	# Fallback: create a basic definition
+	if not definition:
+		var ResourceDef = load("res://scripts/resources/resource_definition.gd")
+		if ResourceDef:
+			definition = ResourceDef.new()
+			definition.id = item_sn
+			definition.display_name = item_id.replace("_", " ").capitalize()
+			definition.stack_size = 999
+			definition.discovered = true
+		else:
+			return {"error": {"code": -32603, "message": "Cannot create item definition"}}
+	
+	if inventory.has_method("add_item"):
+		var remaining: int = inventory.add_item(definition, quantity)
+		var added: int = quantity - remaining
+		return {
+			"success": added > 0,
+			"item": item_id,
+			"requested": quantity,
+			"added": added,
+			"overflow": remaining,
+		}
+	
+	return {"error": {"code": -32603, "message": "Inventory has no add_item method"}}
 
 
 func _remove_item(params: Dictionary) -> Dictionary:
-	var item_name: String = params.get("item", "")
+	var item_id: String = params.get("item", params.get("item_id", ""))
 	var quantity: int = params.get("quantity", 1)
 	
-	if item_name.is_empty():
+	if item_id.is_empty():
 		return {"error": {"code": -32602, "message": "Missing 'item' parameter"}}
 	
-	var inv_mgr := get_node_or_null("/root/InventoryManager")
-	if inv_mgr and inv_mgr.has_method("remove_item"):
-		var result = inv_mgr.remove_item(item_name, quantity)
-		return {"success": true, "item": item_name, "quantity": quantity, "result": str(result)}
+	# Normalize item_id
+	var item_sn := StringName(item_id)
+	if not item_id.contains(":"):
+		item_sn = StringName("core:" + item_id)
 	
+	# Get player inventory via Main scene
+	var main := get_tree().current_scene
 	var player := _find_player()
-	if player and "inventory" in player and player.inventory.has_method("remove_item"):
-		var result = player.inventory.remove_item(item_name, quantity)
-		return {"success": true, "item": item_name, "quantity": quantity, "result": str(result)}
+	var inventory: Node = null
+	
+	if main and main.has_method("get_player_inventory") and player:
+		var peer_id: int = 1
+		if "get_network_peer_id" in player:
+			peer_id = player.get_network_peer_id()
+		inventory = main.get_player_inventory(peer_id)
+	
+	if inventory and inventory.has_method("remove_item_by_id"):
+		var removed: int = inventory.remove_item_by_id(item_sn, quantity)
+		if removed == 0:
+			# Try without prefix
+			removed = inventory.remove_item_by_id(StringName(item_id), quantity)
+		return {
+			"success": removed > 0,
+			"item": item_id,
+			"requested": quantity,
+			"removed": removed,
+		}
+	
+	# Fallback
+	var inv_mgr := get_node_or_null("/root/InventoryManager")
+	if inv_mgr and inv_mgr.has_method("remove_item_by_id"):
+		var removed = inv_mgr.remove_item_by_id(item_sn, quantity)
+		return {"success": removed > 0, "item": item_id, "removed": removed}
 	
 	return {"error": {"code": -32603, "message": "No inventory system found"}}
 
@@ -1742,6 +1870,286 @@ func _query_input_actions() -> Dictionary:
 		if not action.begins_with("ui_"):
 			actions.append(action)
 	return {"actions": actions}
+
+
+# =============================================================================
+# World/Tile Query
+# =============================================================================
+
+func _get_tile(params: Dictionary) -> Dictionary:
+	var x: int = params.get("x", 0)
+	var y: int = params.get("y", 0)
+	var world_tile := Vector2i(x, y)
+	
+	# Try WorldManager for rich tile data
+	var wm := get_node_or_null("/root/WorldManager")
+	if wm and wm.has_method("_get_tile_context"):
+		var ctx: Dictionary = wm._get_tile_context(world_tile)
+		if ctx.is_empty():
+			return {"tile": world_tile, "loaded": false}
+		
+		var chunk_data: RefCounted = ctx.get("chunk_data")
+		var cell_index: int = ctx.get("cell_index", -1)
+		
+		var result := {
+			"tile": {"x": world_tile.x, "y": world_tile.y},
+			"loaded": true,
+			"chunk": {"x": ctx.chunk_coord.x, "y": ctx.chunk_coord.y},
+			"local": {"x": ctx.local_tile.x, "y": ctx.local_tile.y},
+		}
+		
+		# Get ground tile info
+		if chunk_data and "ground_cells" in chunk_data and cell_index >= 0:
+			var ground_cells: Array = chunk_data.ground_cells
+			if cell_index < ground_cells.size():
+				var ground_save_id: int = ground_cells[cell_index]
+				result["ground_save_id"] = ground_save_id
+				# Try to resolve to definition name
+				var content_loader := get_node_or_null("/root/ContentLoader")
+				if content_loader and content_loader.has_method("get_definition_by_save_id"):
+					var def = content_loader.get_definition_by_save_id(&"ground_tile", ground_save_id)
+					if def:
+						result["ground_type"] = def.id if "id" in def else str(def)
+		
+		# Get object/crop at tile
+		if chunk_data and "object_cells" in chunk_data and cell_index >= 0:
+			var object_cells: Array = chunk_data.object_cells
+			if cell_index < object_cells.size():
+				var obj_save_id: int = object_cells[cell_index]
+				if obj_save_id > 0:
+					result["object_save_id"] = obj_save_id
+		
+		# Check for planted crops
+		if chunk_data and chunk_data.has_method("get_crop_at"):
+			var crop = chunk_data.get_crop_at(ctx.local_tile)
+			if crop:
+				result["crop"] = {
+					"id": crop.id if "id" in crop else "unknown",
+					"growth_stage": crop.growth_stage if "growth_stage" in crop else 0,
+					"watered": crop.watered if "watered" in crop else false,
+				}
+		
+		# Check walkability
+		if wm.has_method("is_tile_walkable"):
+			result["walkable"] = wm.is_tile_walkable(world_tile)
+		if wm.has_method("is_world_tile_water"):
+			result["is_water"] = wm.is_world_tile_water(world_tile)
+		
+		return result
+	
+	# Fallback to basic TileMap query
+	return _query_tile({"position": {"x": x, "y": y}})
+
+
+func _get_tiles_in_radius(params: Dictionary) -> Dictionary:
+	var center_x: int = params.get("x", 0)
+	var center_y: int = params.get("y", 0)
+	var radius: int = params.get("radius", 1)
+	
+	var tiles := []
+	for dy in range(-radius, radius + 1):
+		for dx in range(-radius, radius + 1):
+			var tile_info := _get_tile({"x": center_x + dx, "y": center_y + dy})
+			if not tile_info.has("error"):
+				tiles.append(tile_info)
+	
+	return {"tiles": tiles, "count": tiles.size(), "center": {"x": center_x, "y": center_y}, "radius": radius}
+
+
+func _get_entities_at(params: Dictionary) -> Dictionary:
+	var x: int = params.get("x", 0)
+	var y: int = params.get("y", 0)
+	var radius: float = params.get("radius", 32.0)  # Pixel radius
+	var world_pos := Vector2(x * 32.0 + 16.0, y * 32.0 + 16.0)  # Center of tile
+	
+	var entities := []
+	
+	# Find NPCs near tile
+	var npcs := get_tree().get_nodes_in_group("npc")
+	for npc in npcs:
+		if "global_position" in npc:
+			var dist: float = npc.global_position.distance_to(world_pos)
+			if dist <= radius:
+				entities.append({
+					"type": "npc",
+					"name": npc.npc_name if "npc_name" in npc else npc.name,
+					"path": str(npc.get_path()),
+					"distance": dist,
+				})
+	
+	# Find items on ground
+	var items := get_tree().get_nodes_in_group("item_drop")
+	for item in items:
+		if "global_position" in item:
+			var dist: float = item.global_position.distance_to(world_pos)
+			if dist <= radius:
+				entities.append({
+					"type": "item",
+					"id": item.item_id if "item_id" in item else "unknown",
+					"quantity": item.quantity if "quantity" in item else 1,
+					"path": str(item.get_path()),
+					"distance": dist,
+				})
+	
+	# Find structures/buildings
+	var structures := get_tree().get_nodes_in_group("structure")
+	for struct in structures:
+		if "global_position" in struct:
+			var dist: float = struct.global_position.distance_to(world_pos)
+			if dist <= radius:
+				entities.append({
+					"type": "structure",
+					"id": struct.structure_id if "structure_id" in struct else struct.name,
+					"path": str(struct.get_path()),
+					"distance": dist,
+				})
+	
+	return {"entities": entities, "count": entities.size(), "tile": {"x": x, "y": y}}
+
+
+# =============================================================================
+# NPC Interaction
+# =============================================================================
+
+func _interact_npc(params: Dictionary) -> Dictionary:
+	var npc_name: String = params.get("name", params.get("npc", ""))
+	if npc_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'name' parameter"}}
+	
+	var npc := _find_npc_by_name(npc_name)
+	if not npc:
+		return {"error": {"code": -32602, "message": "NPC not found: " + npc_name}}
+	
+	var player := _find_player()
+	if not player:
+		return {"error": {"code": -32603, "message": "Player not found"}}
+	
+	# Call NPC interact method
+	if npc.has_method("interact"):
+		npc.interact(player)
+		return {"success": true, "npc": npc_name, "action": "interact"}
+	
+	return {"error": {"code": -32603, "message": "NPC has no interact method"}}
+
+
+func _give_gift(params: Dictionary) -> Dictionary:
+	var npc_name: String = params.get("npc", params.get("name", ""))
+	var item_id: String = params.get("item", params.get("item_id", ""))
+	var quantity: int = params.get("quantity", 1)
+	
+	if npc_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'npc' parameter"}}
+	if item_id.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'item' parameter"}}
+	
+	var npc := _find_npc_by_name(npc_name)
+	if not npc:
+		return {"error": {"code": -32602, "message": "NPC not found: " + npc_name}}
+	
+	var player := _find_player()
+	if not player:
+		return {"error": {"code": -32603, "message": "Player not found"}}
+	
+	# Check if NPC has gift handling
+	if npc.has_method("receive_gift"):
+		var result = npc.receive_gift(player, item_id, quantity)
+		return {
+			"success": true,
+			"npc": npc_name,
+			"item": item_id,
+			"quantity": quantity,
+			"reaction": result if result is String else str(result),
+		}
+	
+	# Try relationship component
+	if "relationship_component" in npc and npc.relationship_component:
+		var rel = npc.relationship_component
+		if rel.has_method("receive_gift"):
+			var result = rel.receive_gift(item_id, quantity)
+			return {
+				"success": true,
+				"npc": npc_name,
+				"item": item_id,
+				"quantity": quantity,
+				"reaction": str(result),
+			}
+	
+	return {"error": {"code": -32603, "message": "NPC cannot receive gifts"}}
+
+
+func _talk_to_npc(params: Dictionary) -> Dictionary:
+	var npc_name: String = params.get("npc", params.get("name", ""))
+	var message: String = params.get("message", "")
+	
+	if npc_name.is_empty():
+		return {"error": {"code": -32602, "message": "Missing 'npc' parameter"}}
+	
+	var npc := _find_npc_by_name(npc_name)
+	if not npc:
+		return {"error": {"code": -32602, "message": "NPC not found: " + npc_name}}
+	
+	# Try to get conversation via Main scene
+	var main := get_tree().current_scene
+	if main and main.has_method("open_conversation"):
+		main.open_conversation(npc)
+		return {"success": true, "npc": npc_name, "action": "conversation_opened"}
+	
+	# Fallback: direct dialogue if available
+	if npc.has_method("start_dialogue"):
+		npc.start_dialogue(message)
+		return {"success": true, "npc": npc_name, "action": "dialogue_started"}
+	
+	# Try LLM response if available (sync only - async would require different handling)
+	if npc.has_method("get_greeting"):
+		var response = npc.get_greeting()
+		return {"success": true, "npc": npc_name, "response": str(response)}
+	
+	return {"error": {"code": -32603, "message": "NPC has no dialogue system"}}
+
+
+func _find_npc_by_name(npc_name: String) -> Node:
+	var npcs := get_tree().get_nodes_in_group("npc")
+	
+	# Try exact match first
+	for npc in npcs:
+		if "npc_name" in npc and npc.npc_name == npc_name:
+			return npc
+		if npc.name == npc_name:
+			return npc
+	
+	# Try case-insensitive match
+	var lower_name := npc_name.to_lower()
+	for npc in npcs:
+		if "npc_name" in npc and npc.npc_name.to_lower() == lower_name:
+			return npc
+		if npc.name.to_lower() == lower_name:
+			return npc
+		# Also try NPC_Name format
+		if npc.name.to_lower() == "npc_" + lower_name:
+			return npc
+	
+	return null
+
+
+# =============================================================================
+# Enhanced Error Capture
+# =============================================================================
+
+func _capture_error(message: String, error_type: String = "error") -> void:
+	if not _capture_errors:
+		return
+	_captured_errors.append({
+		"type": error_type,
+		"message": message,
+		"timestamp_ms": Time.get_ticks_msec(),
+		"frame": Engine.get_frames_drawn(),
+	})
+
+
+# Override push_error/push_warning to capture them
+func _init() -> void:
+	# Can't actually override built-in push_error, but we can check print output
+	pass
 
 
 # =============================================================================

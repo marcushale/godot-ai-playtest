@@ -589,6 +589,100 @@ class PlaytestClient:
         return await self._call("query", {"type": "input_actions"})
 
     # =========================================================================
+    # World/Tile Query
+    # =========================================================================
+
+    async def get_tile(self, x: int, y: int) -> dict[str, Any]:
+        """Get detailed tile info at world coordinates.
+
+        Args:
+            x: World tile X coordinate
+            y: World tile Y coordinate
+
+        Returns:
+            Dict with tile info: ground_type, walkable, crop, etc.
+        """
+        return await self._call("get_tile", {"x": x, "y": y})
+
+    async def get_tiles_in_radius(
+        self, x: int, y: int, radius: int = 1
+    ) -> dict[str, Any]:
+        """Get tiles in a radius around a point.
+
+        Args:
+            x: Center tile X
+            y: Center tile Y
+            radius: Radius in tiles
+
+        Returns:
+            Dict with tiles array
+        """
+        return await self._call(
+            "get_tiles_in_radius", {"x": x, "y": y, "radius": radius}
+        )
+
+    async def get_entities_at(
+        self, x: int, y: int, radius: float = 32.0
+    ) -> dict[str, Any]:
+        """Get entities (NPCs, items, structures) near a tile.
+
+        Args:
+            x: Tile X coordinate
+            y: Tile Y coordinate
+            radius: Pixel radius to search
+
+        Returns:
+            Dict with entities array
+        """
+        return await self._call(
+            "get_entities_at", {"x": x, "y": y, "radius": radius}
+        )
+
+    # =========================================================================
+    # NPC Interaction
+    # =========================================================================
+
+    async def interact_npc(self, name: str) -> dict[str, Any]:
+        """Interact with an NPC (triggers their interaction handler).
+
+        Args:
+            name: NPC name (e.g., "Iris", "Kael")
+
+        Returns:
+            Dict with success status
+        """
+        return await self._call("interact_npc", {"name": name})
+
+    async def give_gift(
+        self, npc: str, item: str, quantity: int = 1
+    ) -> dict[str, Any]:
+        """Give an item to an NPC as a gift.
+
+        Args:
+            npc: NPC name
+            item: Item ID
+            quantity: Number of items
+
+        Returns:
+            Dict with success and NPC reaction
+        """
+        return await self._call(
+            "give_gift", {"npc": npc, "item": item, "quantity": quantity}
+        )
+
+    async def talk_to_npc(self, npc: str, message: str = "") -> dict[str, Any]:
+        """Start a conversation with an NPC.
+
+        Args:
+            npc: NPC name
+            message: Optional message to send
+
+        Returns:
+            Dict with conversation state or NPC response
+        """
+        return await self._call("talk_to_npc", {"npc": npc, "message": message})
+
+    # =========================================================================
     # Wait Conditions
     # =========================================================================
 
